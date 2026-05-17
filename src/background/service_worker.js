@@ -70,6 +70,12 @@ const PENDING_ACT_GRACE_MS = 2000;
 // lobby/empty screen — no more snapshots arrive, so urgency would otherwise
 // be stuck indefinitely.
 const URGENCY_TIMEOUT_MS = 30 * 1000;
+// v0.4.6: per-table state is evicted once snapshots haven't arrived for
+// this long. Live tables snapshot every few seconds, so 5 min of silence
+// means the tab is parked at a lobby, the table closed, or the same
+// gameID just isn't getting routed there anymore. Stops the popup from
+// listing stale "table X hand 5 (last seen yesterday)" entries.
+const STALE_TABLE_MS = 5 * 60 * 1000;
 
 // ─── Storage persistence ──────────────────────────────────────────
 // Mirror in-memory state to chrome.storage.session on every mutation.
@@ -191,14 +197,19 @@ chrome.alarms.create('ut-keepalive', { periodInMinutes: 0.5 });
 // fire webNavigation.onCommitted. The proxy + relay both have window-scope
 // guards so re-injecting an already-running pair is a no-op.
 chrome.alarms.create('ut-reinject-probe', { periodInMinutes: 1 });
+// v0.4.6: periodic full state rebuild during quiet moments.
+chrome.alarms.create('ut-full-reset', { periodInMinutes: 30 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ut-keepalive') {
     pruneStaleUrgency();
+    evictStaleTables();
     const n = state.perTab.size;
     const q = state.queue.length;
     if (n > 0 || q > 0) console.log(`[ut] keepalive: ${n} tab(s), ${q} queued`);
   } else if (alarm.name === 'ut-reinject-probe') {
     reinjectMissingTabs();
+  } else if (alarm.name === 'ut-full-reset') {
+    fullStateReset('scheduled-30min');
   }
 });
 
@@ -285,6 +296,56 @@ function pruneStaleUrgency() {
     schedulePersist();
     ensureStageInSync();
   }
+}
+
+// v0.4.6: drop per-table entries whose last snapshot is older than
+// STALE_TABLE_MS. If all of a tab's tables are gone, drop the tab too.
+// Catches the "tab on a closed Hijack table" / "old logger session" case
+// where the gameID would otherwise sit in state.perTab forever.
+function evictStaleTables() {
+  const now = Date.now();
+  let evictedTables = 0;
+  let evictedTabs = 0;
+  for (const [tabId, tab] of Array.from(state.perTab.entries())) {
+    for (const [gameID, ts] of Array.from(tab.perTable.entries())) {
+      const idleMs = now - (ts.lastSnapshotAt || 0);
+      if (idleMs > STALE_TABLE_MS) {
+        tab.perTable.delete(gameID);
+        dequeueUrgent(tabId, gameID);
+        if (state.stage && state.stage.tabId === tabId && state.stage.gameID === gameID) {
+          // Was staged — abandon home, advance
+          state.stage = null;
+        }
+        console.log(`[ut] evicted stale table ${gameID} on tab ${tabId} (idle ${Math.round(idleMs/1000)}s)`);
+        evictedTables++;
+      }
+    }
+    if (tab.perTable.size === 0) {
+      state.perTab.delete(tabId);
+      evictedTabs++;
+    }
+  }
+  if (evictedTables > 0 || evictedTabs > 0) {
+    schedulePersist();
+    ensureStageInSync();
+  }
+}
+
+// v0.4.6: periodic full-state rebuild. Wipes per-tab state + queue and
+// re-injects into every live Hijack tab. Safe-only: skipped if a stage
+// is active or any queue entry exists, so we never reset mid-decision.
+// heroGUID, settings, and stage rect (chrome.storage.local) are preserved.
+async function fullStateReset(reason) {
+  if (state.stage || state.queue.length > 0) {
+    console.log(`[ut] full-reset (${reason}) skipped — stage/queue active`);
+    return;
+  }
+  const beforeTabs = state.perTab.size;
+  state.perTab.clear();
+  state.queue = [];
+  schedulePersist();
+  console.log(`[ut] full-reset (${reason}): wiped ${beforeTabs} tracked tab(s); re-injecting`);
+  await reinjectMissingTabs();
 }
 
 // ─── MAIN-world proxy injection ───────────────────────────────────
@@ -943,4 +1004,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.5 — popup dedupes duplicate-tab rows');
+console.log('[ut] service worker booted v0.4.6 — stale-table eviction + 30min self-cleanup');
