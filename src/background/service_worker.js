@@ -20,6 +20,32 @@ const HIJACK_HOST = 'game.hijack.poker';
 const STORAGE_KEY = 'ut_state_v1';
 const STAGE_RECT_KEY = 'ut_stage_rect_v1';  // persistent — in chrome.storage.local
 
+// ─── Debug ring buffer (v0.4.8) ───────────────────────────────────
+// Last ~300 SW console messages, captured for cross-machine debugging.
+// In-memory only — lost on SW eviction (acceptable: Tommy grabs a snapshot
+// the moment something looks off). Wraps console.log/warn/error.
+const _ringBuffer = [];
+const _RING_SIZE = 300;
+const _origConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+};
+function _pushRing(level, args) {
+  try {
+    const msg = args.map(a =>
+      typeof a === 'string' ? a
+      : (typeof a === 'object' && a !== null) ? (() => { try { return JSON.stringify(a).slice(0, 400); } catch (e) { return String(a); } })()
+      : String(a)
+    ).join(' ').slice(0, 800);
+    _ringBuffer.push({ t: Date.now(), level, msg });
+    if (_ringBuffer.length > _RING_SIZE) _ringBuffer.shift();
+  } catch (e) { /* never throw from logging */ }
+}
+console.log = (...a) => { _pushRing('log', a); _origConsole.log(...a); };
+console.warn = (...a) => { _pushRing('warn', a); _origConsole.warn(...a); };
+console.error = (...a) => { _pushRing('error', a); _origConsole.error(...a); };
+
 // ─── Per-tab state (in-memory mirror of storage) ───────────────────
 // state.perTab: Map<tabId, { perTable: Map<gameID, TableEntry>, startedAt }>
 // state.queue:  Array<{ tabId, gameID, urgentSince }>   // FIFO order
@@ -940,6 +966,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'popup_get_state':
       sendResponse({ ok: true, state: serializeState() });
       return false;  // sync response
+    case 'popup_debug_snapshot': {
+      // v0.4.8: bundle full state + ring buffer for cross-machine debugging.
+      // Stage rect is fetched async from chrome.storage.local so we await it.
+      (async () => {
+        let stageRect = null;
+        try {
+          const r = await chrome.storage.local.get([STAGE_RECT_KEY]);
+          stageRect = (r && r[STAGE_RECT_KEY]) || null;
+        } catch (e) { /* ignore */ }
+        sendResponse({
+          ok: true,
+          snapshot: {
+            extension: 'Urgent Table',
+            version: '0.4.8',
+            bootedAt: state.bootedAt,
+            capturedAt: Date.now(),
+            heroGUID: state.heroGUID ? (state.heroGUID.slice(0, 12) + '…') : null,
+            settings: state.settings,
+            stageRect,
+            currentStage: state.stage,
+            queue: state.queue.slice(),
+            tabs: serializeState().tabs,
+            ringBuffer: _ringBuffer.slice(),
+          },
+        });
+      })();
+      return true;  // async response
+    }
     case 'popup_set_enabled': {
       state.settings.enabled = !!msg.value;
       console.log(`[ut] enabled = ${state.settings.enabled}`);
@@ -1019,4 +1073,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.7 — 5-min state-preserving refresh');
+console.log('[ut] service worker booted v0.4.8 — debug snapshot button live');

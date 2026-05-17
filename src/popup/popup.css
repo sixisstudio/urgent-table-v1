@@ -102,6 +102,12 @@ button:disabled {
   margin-bottom: 4px;
 }
 
+.dbg-status {
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-left: 8px;
+}
+
 ol, ul {
   list-style: none;
   padding: 0;

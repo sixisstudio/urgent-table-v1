@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Urgent Table</h1>
-    <span class="version">v0.4.7</span>
+    <span class="version">v0.4.8</span>
   </header>
 
   <section class="settings">
@@ -42,6 +42,13 @@
     <ul id="tableList">
       <li class="empty">No Hijack tabs detected. Open a table to start.</li>
     </ul>
+  </section>
+
+  <section class="debug">
+    <h2>Debug</h2>
+    <button id="copyDebug">Copy debug snapshot</button>
+    <span id="copyDebugStatus" class="dbg-status"></span>
+    <p class="hint">Copies SW state + recent events to clipboard as JSON for cross-machine debugging.</p>
   </section>
 
   <script src="popup.js" type="module"></script>

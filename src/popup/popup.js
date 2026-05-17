@@ -16,6 +16,8 @@ const el = {
   stageStatus: document.getElementById('stageStatus'),
   queueList: document.getElementById('queueList'),
   tableList: document.getElementById('tableList'),
+  copyDebug: document.getElementById('copyDebug'),
+  copyDebugStatus: document.getElementById('copyDebugStatus'),
 };
 
 let latest = null;
@@ -208,6 +210,34 @@ function render() {
 
 // Refresh "for X.Xs" counters every 500ms while the popup is open.
 setInterval(() => { if (latest && (latest.queue || []).length > 0) render(); }, 500);
+
+// ─── Debug snapshot (v0.4.8) ──────────────────────────────────────
+if (el.copyDebug) {
+  el.copyDebug.addEventListener('click', async () => {
+    el.copyDebug.disabled = true;
+    el.copyDebugStatus.textContent = 'fetching…';
+    const resp = await new Promise((res) => {
+      chrome.runtime.sendMessage({ [RELAY_NS]: 1, kind: 'popup_debug_snapshot' }, (r) => {
+        if (chrome.runtime.lastError) res({ ok: false, error: chrome.runtime.lastError.message });
+        else res(r);
+      });
+    });
+    if (!resp || !resp.ok) {
+      el.copyDebugStatus.textContent = 'failed: ' + ((resp && resp.error) || 'no response');
+      el.copyDebug.disabled = false;
+      return;
+    }
+    const json = JSON.stringify(resp.snapshot, null, 2);
+    try {
+      await navigator.clipboard.writeText(json);
+      const kb = (json.length / 1024).toFixed(1);
+      el.copyDebugStatus.textContent = `copied ${kb} KB · ${resp.snapshot.ringBuffer.length} log lines`;
+    } catch (e) {
+      el.copyDebugStatus.textContent = 'clipboard blocked: ' + e.message;
+    }
+    el.copyDebug.disabled = false;
+  });
+}
 
 loadInitial();
 loadStage();
