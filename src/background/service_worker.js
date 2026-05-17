@@ -251,8 +251,27 @@ function resolveCurrentActorSeat(game) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// v0.3.0-discovery: log up to 30 outgoing frames per SW boot so we can
+// identify the opcode shape used by hero actions (bet/raise/call/check/fold).
+// Once the format is known this branch is replaced with a real whitelist
+// matcher that marks the table's `pendingActComplete` and clears urgency
+// the moment the hero clicks an action — ~200ms ahead of the next inbound
+// snapshot, which makes window rotation feel snappy in v0.4.
+const outgoingSamples = { count: 0, max: 30 };
+
 function processFrame(tabId, msg) {
   if (!msg.url || !msg.url.includes('game-ws.hijackpoker.com')) return;
+
+  if (msg.dir === 'out') {
+    if (outgoingSamples.count < outgoingSamples.max) {
+      const raw = decodeData(msg.data);
+      const preview = (typeof raw === 'string') ? raw.slice(0, 400) : `<${msg.data && msg.data.type || 'unknown'}>`;
+      outgoingSamples.count++;
+      console.log(`[ut] OUT #${outgoingSamples.count}/${outgoingSamples.max} tab=${tabId}: ${preview}`);
+    }
+    return;
+  }
+
   const raw = decodeData(msg.data);
   const parsed = parseGameWSFrame(raw);
   if (!parsed || parsed.event !== 'gotOmaha') return;
@@ -360,4 +379,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.2.1 — auto-inject mode');
+console.log('[ut] service worker booted v0.3.0-discovery — outgoing-frame logging mode');
