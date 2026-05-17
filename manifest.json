@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.3.2",
-  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.3.0 is a one-hand discovery probe that logs outgoing WS frames so we can wire fast-clear in the next push.",
+  "version": "0.3.3",
+  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.3.3 ships the outgoing-frame fast-clear: urgency clears the instant hero clicks instead of waiting for the next inbound snapshot.",
   "permissions": [
     "scripting",
     "storage",

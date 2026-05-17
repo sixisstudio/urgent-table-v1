@@ -251,23 +251,63 @@ function resolveCurrentActorSeat(game) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-// v0.3.2-discovery: only log OUT frames while at least one table on this
-// tab is currently urgent. That isolates the exact frame the hero sent
-// when they clicked an action — no session-setup noise. Budget raised to
-// 100 since the filter alone keeps the volume low.
-const outgoingSamples = { count: 0, max: 100 };
+// v0.3.3: outgoing-frame fast-clear.
+//
+// Hero actions fly out on engine.hijack.poker/socket.io/ as socket.io EVENT
+// frames of the form `42<ackId>["get_playermove", {gameID, seatId, data}]`
+// where data is a URL-encoded query string like "&action=fold&opt=&actionTrigger=".
+// (Discovered in v0.3.2-discovery.)
+//
+// Per the council pre-build review:
+//   - Whitelist opcode: only "get_playermove" counts as a real action.
+//   - Gate clear on table currently urgent AND payload.gameID matches AND
+//     payload.seatId === ts.heroSeat. Without these guards a stale action
+//     frame (e.g. delayed by network jitter) or a ping/heartbeat shouldn't
+//     clear urgency.
+//   - Inbound snapshot (`game.move` flipping away from hero) remains the
+//     source of truth — the outbound match is just the ~200 ms fast path.
+//     Both paths converge on the same state mutation, making the clear
+//     fully idempotent.
+
+function tryFastClear(tabId, msg) {
+  const raw = decodeData(msg.data);
+  if (typeof raw !== 'string') return;
+  // socket.io EVENT framing: "42" + optional ack id + JSON array
+  const m = raw.match(/^42\d*(\[.+\])$/s);
+  if (!m) return;
+  let arr;
+  try { arr = JSON.parse(m[1]); } catch (e) { return; }
+  if (!Array.isArray(arr) || arr.length < 2 || arr[0] !== 'get_playermove') return;
+  const payload = arr[1];
+  if (!payload || typeof payload !== 'object') return;
+  const gameID = parseInt(payload.gameID, 10);
+  const seatId = payload.seatId;
+  if (!gameID || !Number.isFinite(seatId)) return;
+
+  const tab = state.perTab.get(tabId);
+  if (!tab) return;
+  const ts = tab.perTable.get(gameID);
+  if (!ts || !ts.urgent) return;
+  if (ts.heroSeat !== seatId) return;
+
+  // Extract action label for the log line only
+  let actionLabel = '?';
+  try {
+    const data = String(payload.data || '');
+    const params = new URLSearchParams(data.startsWith('&') ? data.slice(1) : data);
+    actionLabel = params.get('action') || '?';
+  } catch (e) { /* swallow */ }
+
+  ts.urgent = false;
+  ts.urgentSince = 0;
+  dequeueUrgent(tabId, gameID);
+  console.log(`[ut] URGENT OFF (fast)  tab=${tabId} table=${gameID} action=${actionLabel} seat=${seatId}; remaining queue=${state.queue.length}`);
+  schedulePersist();
+}
 
 function processFrame(tabId, msg) {
   if (msg.dir === 'out') {
-    const tab = state.perTab.get(tabId);
-    const anyUrgent = tab && Array.from(tab.perTable.values()).some(t => t.urgent);
-    if (anyUrgent && outgoingSamples.count < outgoingSamples.max) {
-      const raw = decodeData(msg.data);
-      const preview = (typeof raw === 'string') ? raw.slice(0, 500) : `<${msg.data && msg.data.type || 'unknown'}>`;
-      const urlShort = (msg.url || '').replace(/^wss?:\/\//, '').slice(0, 60);
-      outgoingSamples.count++;
-      console.log(`[ut] OUT-URGENT #${outgoingSamples.count}/${outgoingSamples.max} url=${urlShort} tab=${tabId}: ${preview}`);
-    }
+    tryFastClear(tabId, msg);
     return;
   }
 
@@ -305,7 +345,7 @@ function processFrame(tabId, msg) {
     } else {
       ts.urgentSince = 0;
       dequeueUrgent(tabId, game.gameID);
-      console.log(`[ut] URGENT OFF tab=${tabId} table=${game.gameID} (actor now seat ${actorSeat || 'none'}; remaining queue=${state.queue.length})`);
+      console.log(`[ut] URGENT OFF (snap)  tab=${tabId} table=${game.gameID} (actor now seat ${actorSeat || 'none'}; remaining queue=${state.queue.length})`);
     }
   }
   schedulePersist();
@@ -380,4 +420,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.3.2-discovery — OUT logging gated on urgent window');
+console.log('[ut] service worker booted v0.3.3 — fast-clear active');
