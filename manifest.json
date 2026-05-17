@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.3.0 is a one-hand discovery probe that logs outgoing WS frames so we can wire fast-clear in the next push.",
   "permissions": [
     "scripting",

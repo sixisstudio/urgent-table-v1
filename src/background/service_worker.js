@@ -260,17 +260,24 @@ function resolveCurrentActorSeat(game) {
 const outgoingSamples = { count: 0, max: 30 };
 
 function processFrame(tabId, msg) {
-  if (!msg.url || !msg.url.includes('game-ws.hijackpoker.com')) return;
-
+  // v0.3.1-discovery: capture outgoing frames from ALL WS URLs, not just
+  // game-ws.hijackpoker.com. Hero actions (fold/bet/etc.) appear to flow
+  // through a different socket — probably engine.hijack.poker/socket.io/.
+  // Filter is conditional: outbound = any URL, inbound = game-ws only
+  // (so the gotOmaha state-machine code below doesn't see socket.io noise).
   if (msg.dir === 'out') {
     if (outgoingSamples.count < outgoingSamples.max) {
       const raw = decodeData(msg.data);
       const preview = (typeof raw === 'string') ? raw.slice(0, 400) : `<${msg.data && msg.data.type || 'unknown'}>`;
+      // Strip JWT-bearing query if any (defensive — proxy already does safeUrl)
+      const urlShort = (msg.url || '').replace(/^wss?:\/\//, '').slice(0, 60);
       outgoingSamples.count++;
-      console.log(`[ut] OUT #${outgoingSamples.count}/${outgoingSamples.max} tab=${tabId}: ${preview}`);
+      console.log(`[ut] OUT #${outgoingSamples.count}/${outgoingSamples.max} url=${urlShort} tab=${tabId}: ${preview}`);
     }
     return;
   }
+
+  if (!msg.url || !msg.url.includes('game-ws.hijackpoker.com')) return;
 
   const raw = decodeData(msg.data);
   const parsed = parseGameWSFrame(raw);
@@ -379,4 +386,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.3.0-discovery — outgoing-frame logging mode');
+console.log('[ut] service worker booted v0.3.1-discovery — outgoing-frame logging (all URLs)');
