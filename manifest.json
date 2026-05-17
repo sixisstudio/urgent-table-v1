@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.4.6",
-  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.6 adds stale-table eviction and periodic safe self-cleanup.",
+  "version": "0.4.7",
+  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.7 re-injects scripts every 5 min to recover from silent failures without disrupting state.",
   "permissions": [
     "scripting",
     "storage",

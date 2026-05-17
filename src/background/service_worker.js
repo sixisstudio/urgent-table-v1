@@ -197,8 +197,9 @@ chrome.alarms.create('ut-keepalive', { periodInMinutes: 0.5 });
 // fire webNavigation.onCommitted. The proxy + relay both have window-scope
 // guards so re-injecting an already-running pair is a no-op.
 chrome.alarms.create('ut-reinject-probe', { periodInMinutes: 1 });
-// v0.4.6: periodic full state rebuild during quiet moments.
-chrome.alarms.create('ut-full-reset', { periodInMinutes: 30 });
+// v0.4.7: every 5 min, re-inject scripts into every live Hijack tab to
+// recover from any silent script death. Runs always — no state wiped.
+chrome.alarms.create('ut-refresh', { periodInMinutes: 5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ut-keepalive') {
     pruneStaleUrgency();
@@ -208,8 +209,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     if (n > 0 || q > 0) console.log(`[ut] keepalive: ${n} tab(s), ${q} queued`);
   } else if (alarm.name === 'ut-reinject-probe') {
     reinjectMissingTabs();
-  } else if (alarm.name === 'ut-full-reset') {
-    fullStateReset('scheduled-30min');
+  } else if (alarm.name === 'ut-refresh') {
+    refreshAllTabs('scheduled-5min');
   }
 });
 
@@ -331,21 +332,35 @@ function evictStaleTables() {
   }
 }
 
-// v0.4.6: periodic full-state rebuild. Wipes per-tab state + queue and
-// re-injects into every live Hijack tab. Safe-only: skipped if a stage
-// is active or any queue entry exists, so we never reset mid-decision.
-// heroGUID, settings, and stage rect (chrome.storage.local) are preserved.
-async function fullStateReset(reason) {
-  if (state.stage || state.queue.length > 0) {
-    console.log(`[ut] full-reset (${reason}) skipped — stage/queue active`);
-    return;
+// v0.4.7: light periodic refresh — re-inject the proxy + relay into
+// every live Hijack tab so anything that silently died gets revived.
+// NEVER wipes state. Hero GUID, stage rect, current stage, queue,
+// per-table state are all preserved. Both scripts have window-scope
+// guards (__ut_v1_proxy_installed__ / __ut_v1_relay_installed__) so
+// re-injecting on top of a healthy pair is a free no-op. The point
+// is to recover from silent failures (proxy crashed, relay port
+// dropped without reconnect, etc.) without disrupting active play.
+async function refreshAllTabs(reason) {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] }); }
+  catch (e) { return; }
+  console.log(`[ut] refresh (${reason}): re-injecting into ${tabs.length} Hijack tab(s)`);
+  for (const tab of tabs) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        world: 'ISOLATED',
+        files: ['src/content/relay.js'],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        files: ['src/background/ws_proxy.js'],
+      });
+    } catch (e) {
+      // Discarded/unreachable — fine, next refresh tick will try again.
+    }
   }
-  const beforeTabs = state.perTab.size;
-  state.perTab.clear();
-  state.queue = [];
-  schedulePersist();
-  console.log(`[ut] full-reset (${reason}): wiped ${beforeTabs} tracked tab(s); re-injecting`);
-  await reinjectMissingTabs();
 }
 
 // ─── MAIN-world proxy injection ───────────────────────────────────
@@ -1004,4 +1019,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.6 — stale-table eviction + 30min self-cleanup');
+console.log('[ut] service worker booted v0.4.7 — 5-min state-preserving refresh');
