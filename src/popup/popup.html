@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Urgent Table</h1>
-    <span class="version">v0.3.3</span>
+    <span class="version">v0.4.0</span>
   </header>
 
   <section class="settings">
@@ -22,8 +22,12 @@
 
   <section class="stage">
     <h2>Stage position</h2>
-    <button id="setStagePos" disabled>Set stage position</button>
-    <p class="hint">Lands in v0.4. The chosen rect is where every urgent table will be snapped on-screen so you can keep your eyes on one spot.</p>
+    <div id="stageStatus" class="stage-status">Not set</div>
+    <div class="stage-actions">
+      <button id="setStagePos">Set stage position</button>
+      <button id="clearStage" style="display:none">Clear</button>
+    </div>
+    <p class="hint">Clicking <em>Set stage position</em> opens a placeholder window; drag and resize it where you want urgent tables to appear, then click Save inside. Window-snapping itself lands in v0.4.1 — this capture step is v0.4.0.</p>
   </section>
 
   <section class="queue">

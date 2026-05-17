@@ -7,10 +7,13 @@
 
 const RELAY_NS = '__ut_v1__';
 const STORAGE_KEY = 'ut_state_v1';
+const STAGE_RECT_KEY = 'ut_stage_rect_v1';
 
 const el = {
   enabled: document.getElementById('enabled'),
   setStagePos: document.getElementById('setStagePos'),
+  clearStage: document.getElementById('clearStage'),
+  stageStatus: document.getElementById('stageStatus'),
   queueList: document.getElementById('queueList'),
   tableList: document.getElementById('tableList'),
 };
@@ -38,9 +41,13 @@ async function loadInitial() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'session' || !changes[STORAGE_KEY]) return;
-  latest = changes[STORAGE_KEY].newValue;
-  render();
+  if (area === 'session' && changes[STORAGE_KEY]) {
+    latest = changes[STORAGE_KEY].newValue;
+    render();
+  }
+  if (area === 'local' && changes[STAGE_RECT_KEY]) {
+    renderStage(changes[STAGE_RECT_KEY].newValue);
+  }
 });
 
 el.enabled.addEventListener('change', () => {
@@ -48,6 +55,53 @@ el.enabled.addEventListener('change', () => {
     [RELAY_NS]: 1, kind: 'popup_set_enabled', value: el.enabled.checked,
   }, () => { /* state will be pushed back through storage change */ });
 });
+
+el.setStagePos.addEventListener('click', () => {
+  el.setStagePos.disabled = true;
+  chrome.runtime.sendMessage(
+    { [RELAY_NS]: 1, kind: 'popup_open_stage_picker' },
+    (resp) => {
+      el.setStagePos.disabled = false;
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        console.warn('[ut popup] open stage picker failed:', resp && resp.error);
+      }
+      // The popup typically closes itself when focus moves to the new
+      // window. No further render needed; the storage.local change will
+      // re-paint if the user saves.
+    }
+  );
+});
+
+el.clearStage.addEventListener('click', () => {
+  chrome.runtime.sendMessage(
+    { [RELAY_NS]: 1, kind: 'popup_clear_stage' },
+    () => { /* storage.onChanged refreshes */ }
+  );
+});
+
+async function loadStage() {
+  try {
+    const r = await chrome.storage.local.get([STAGE_RECT_KEY]);
+    renderStage(r && r[STAGE_RECT_KEY]);
+  } catch (e) { /* ignore */ }
+}
+
+function renderStage(rect) {
+  if (rect && typeof rect.width === 'number') {
+    el.stageStatus.classList.add('set');
+    const ts = new Date(rect.savedAt || 0);
+    el.stageStatus.textContent =
+      `${rect.width}×${rect.height} @ (${rect.left}, ${rect.top})`
+      + (rect.displayId != null ? `  display ${String(rect.displayId).slice(0, 10)}` : '');
+    el.clearStage.style.display = '';
+    el.setStagePos.textContent = 'Re-set stage position';
+  } else {
+    el.stageStatus.classList.remove('set');
+    el.stageStatus.textContent = 'Not set';
+    el.clearStage.style.display = 'none';
+    el.setStagePos.textContent = 'Set stage position';
+  }
+}
 
 function fmtElapsed(ms) {
   if (!ms || ms < 0) return '';
@@ -129,3 +183,4 @@ function render() {
 setInterval(() => { if (latest && (latest.queue || []).length > 0) render(); }, 500);
 
 loadInitial();
+loadStage();

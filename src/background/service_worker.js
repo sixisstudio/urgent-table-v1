@@ -18,6 +18,7 @@ import { isRealCard } from '../lib/card_codec.js';
 const RELAY_NS = '__ut_v1__';
 const HIJACK_HOST = 'game.hijack.poker';
 const STORAGE_KEY = 'ut_state_v1';
+const STAGE_RECT_KEY = 'ut_stage_rect_v1';  // persistent — in chrome.storage.local
 
 // ─── Per-tab state (in-memory mirror of storage) ───────────────────
 // state.perTab: Map<tabId, { perTable: Map<gameID, TableEntry>, startedAt }>
@@ -351,7 +352,137 @@ function processFrame(tabId, msg) {
   schedulePersist();
 }
 
-// ─── Popup message handler ────────────────────────────────────────
+// ─── Stage position capture (v0.4.0) ──────────────────────────────
+// User clicks "Set stage position" in the extension popup → SW opens a
+// dragger placeholder window centered on the primary display → user moves +
+// resizes it to where they want every urgent table snapped → user clicks
+// Save inside the placeholder → SW reads the window's bounds via
+// chrome.windows.get(), figures out which display its center lies on via
+// chrome.system.display.getInfo(), persists {left, top, width, height,
+// displayId, savedAt} to chrome.storage.local, and closes the placeholder.
+//
+// v0.4.0 only captures + persists. Actual window-snapping lands in v0.4.1.
+
+let stagePlaceholderWindowId = null;
+
+async function openStagePlaceholder() {
+  if (stagePlaceholderWindowId !== null) {
+    try {
+      await chrome.windows.update(stagePlaceholderWindowId, { focused: true });
+      return { ok: true, reused: true };
+    } catch (e) {
+      stagePlaceholderWindowId = null;
+    }
+  }
+  let displays;
+  try { displays = await chrome.system.display.getInfo(); }
+  catch (e) { return { ok: false, error: 'system.display.getInfo failed: ' + e.message }; }
+  const primary = displays.find(d => d.isPrimary) || displays[0];
+  if (!primary) return { ok: false, error: 'no display info' };
+
+  // If a stage rect is already saved, open the placeholder at that position
+  // so re-set workflow lands you on top of the current setting.
+  let initial = null;
+  try {
+    const r = await chrome.storage.local.get([STAGE_RECT_KEY]);
+    if (r && r[STAGE_RECT_KEY]) initial = r[STAGE_RECT_KEY];
+  } catch (e) { /* ignore */ }
+
+  const w = (initial && initial.width)  || 720;
+  const h = (initial && initial.height) || 540;
+  const left = (initial && initial.left !== undefined)
+    ? initial.left
+    : Math.round(primary.workArea.left + (primary.workArea.width  - w) / 2);
+  const top  = (initial && initial.top  !== undefined)
+    ? initial.top
+    : Math.round(primary.workArea.top  + (primary.workArea.height - h) / 2);
+
+  try {
+    const win = await chrome.windows.create({
+      url: chrome.runtime.getURL('src/popup/stage_placeholder.html'),
+      type: 'popup',
+      left, top, width: w, height: h,
+      focused: true,
+    });
+    stagePlaceholderWindowId = win.id;
+    console.log(`[ut] stage placeholder opened windowId=${win.id} at (${win.left},${win.top}) ${win.width}x${win.height}`);
+    return { ok: true, windowId: win.id };
+  } catch (e) {
+    return { ok: false, error: 'windows.create failed: ' + e.message };
+  }
+}
+
+async function saveStageFromPlaceholder() {
+  if (stagePlaceholderWindowId === null) return { ok: false, error: 'no placeholder window open' };
+  let win;
+  try { win = await chrome.windows.get(stagePlaceholderWindowId); }
+  catch (e) {
+    stagePlaceholderWindowId = null;
+    return { ok: false, error: 'windows.get failed: ' + e.message };
+  }
+  if (typeof win.left !== 'number' || typeof win.top !== 'number'
+      || typeof win.width !== 'number' || typeof win.height !== 'number') {
+    return { ok: false, error: 'window has no bounds (was it minimized?)' };
+  }
+
+  // Figure out which display its center is on. Multi-monitor + DPI mixing
+  // is the main reason the council insisted on tracking displayId, not
+  // just the bare rect.
+  let displayId = null;
+  try {
+    const displays = await chrome.system.display.getInfo();
+    const cx = win.left + win.width / 2;
+    const cy = win.top + win.height / 2;
+    const hit = displays.find(d =>
+      cx >= d.bounds.left && cx < d.bounds.left + d.bounds.width &&
+      cy >= d.bounds.top  && cy < d.bounds.top  + d.bounds.height
+    );
+    displayId = (hit && hit.id) || (displays[0] && displays[0].id) || null;
+  } catch (e) { /* leave null */ }
+
+  const stageRect = {
+    left: win.left, top: win.top, width: win.width, height: win.height,
+    displayId, savedAt: Date.now(),
+  };
+  try {
+    await chrome.storage.local.set({ [STAGE_RECT_KEY]: stageRect });
+  } catch (e) {
+    return { ok: false, error: 'storage.local.set failed: ' + e.message };
+  }
+  console.log(`[ut] stage saved: ${stageRect.width}x${stageRect.height} at (${stageRect.left},${stageRect.top}) displayId=${displayId}`);
+
+  // Close the placeholder (briefly delay so the placeholder UI can render
+  // its "Saved … closing" toast first).
+  const closingId = stagePlaceholderWindowId;
+  setTimeout(() => {
+    chrome.windows.remove(closingId).catch(() => { /* may already be gone */ });
+  }, 600);
+  return { ok: true, stageRect };
+}
+
+async function cancelStagePlaceholder() {
+  if (stagePlaceholderWindowId === null) return { ok: true };
+  const closingId = stagePlaceholderWindowId;
+  stagePlaceholderWindowId = null;
+  try { await chrome.windows.remove(closingId); } catch (e) {}
+  return { ok: true };
+}
+
+async function clearStageRect() {
+  await chrome.storage.local.remove(STAGE_RECT_KEY);
+  console.log('[ut] stage rect cleared');
+  return { ok: true };
+}
+
+// Track placeholder closure so we don't leak the windowId
+chrome.windows.onRemoved.addListener((wid) => {
+  if (wid === stagePlaceholderWindowId) {
+    stagePlaceholderWindowId = null;
+    console.log('[ut] stage placeholder closed');
+  }
+});
+
+// ─── Popup + placeholder message handler ──────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg[RELAY_NS] !== 1) return false;
   switch (msg.kind) {
@@ -361,7 +492,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'popup_set_enabled': {
       state.settings.enabled = !!msg.value;
       console.log(`[ut] enabled = ${state.settings.enabled}`);
-      // If we just disabled, clear urgency from every table so the queue empties.
       if (!state.settings.enabled) {
         for (const tab of state.perTab.values()) {
           for (const ts of tab.perTable.values()) {
@@ -373,6 +503,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       schedulePersist();
       sendResponse({ ok: true });
       return false;
+    }
+    case 'popup_open_stage_picker': {
+      openStagePlaceholder().then(r => sendResponse(r));
+      return true;  // async response
+    }
+    case 'popup_clear_stage': {
+      clearStageRect().then(r => sendResponse(r));
+      return true;
+    }
+    case 'stage_placeholder_save': {
+      saveStageFromPlaceholder().then(r => sendResponse(r));
+      return true;
+    }
+    case 'stage_placeholder_cancel': {
+      cancelStagePlaceholder().then(r => sendResponse(r));
+      return true;
     }
   }
   return false;
@@ -420,4 +566,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.3.3 — fast-clear active');
+console.log('[ut] service worker booted v0.4.0 — stage capture (no snap yet)');

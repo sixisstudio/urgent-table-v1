@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.3.3",
-  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.3.3 ships the outgoing-frame fast-clear: urgency clears the instant hero clicks instead of waiting for the next inbound snapshot.",
+  "version": "0.4.0",
+  "description": "Detects which Hijack Poker table requires your action and brings it into a fixed stage window. v0.4.0 adds Set stage position capture (no window-snapping yet — that lands in v0.4.1).",
   "permissions": [
     "scripting",
     "storage",
