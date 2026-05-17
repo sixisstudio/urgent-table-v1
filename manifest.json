@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Urgent Table",
+  "short_name": "UrgentTable",
+  "version": "0.1.0",
+  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.1.0 = detection-only console logging.",
+  "permissions": [
+    "scripting",
+    "storage",
+    "tabs",
+    "webNavigation",
+    "alarms",
+    "system.display"
+  ],
+  "host_permissions": [
+    "https://game.hijack.poker/*",
+    "https://*.hijackpoker.com/*",
+    "https://*.hijack.poker/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Urgent Table (detection only — popup lands in v0.2)"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://game.hijack.poker/*"
+      ],
+      "js": ["src/content/relay.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true
+    }
+  ]
+}
