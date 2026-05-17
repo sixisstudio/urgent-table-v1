@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Urgent Table</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>Urgent Table</h1>
+    <span class="version">v0.2.0</span>
+  </header>
+
+  <section class="settings">
+    <label class="row">
+      <input type="checkbox" id="enabled" checked>
+      <span>Enabled</span>
+    </label>
+    <p class="hint">When off, urgency events are ignored and the queue clears. WebSocket capture stays running (no churn).</p>
+  </section>
+
+  <section class="stage">
+    <h2>Stage position</h2>
+    <button id="setStagePos" disabled>Set stage position</button>
+    <p class="hint">Lands in v0.4. The chosen rect is where every urgent table will be snapped on-screen so you can keep your eyes on one spot.</p>
+  </section>
+
+  <section class="queue">
+    <h2>Urgent queue</h2>
+    <ol id="queueList">
+      <li class="empty">No tables waiting on you.</li>
+    </ol>
+  </section>
+
+  <section class="tables">
+    <h2>All known tables</h2>
+    <ul id="tableList">
+      <li class="empty">No Hijack tabs detected. Open a table to start.</li>
+    </ul>
+  </section>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

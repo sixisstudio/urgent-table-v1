@@ -1,0 +1,132 @@
+:root {
+  --bg: #0e0f12;
+  --bg-elev: #181a20;
+  --bg-elev-2: #20232b;
+  --fg: #e5e7eb;
+  --fg-dim: #9ca3af;
+  --accent: #38bdf8;
+  --urgent: #f97316;
+  --urgent-bg: #2a1808;
+  --border: #2a2d36;
+  --good: #22c55e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 360px;
+  max-width: 420px;
+  padding: 12px 14px 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.version {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+section { margin-bottom: 14px; }
+section h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  margin: 0 0 6px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.row input[type=checkbox] { margin: 0; }
+
+.hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+  line-height: 1.4;
+}
+
+button {
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--bg-elev-2); }
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+ol, ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+#queueList li, #tableList li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+#queueList li.urgent {
+  background: var(--urgent-bg);
+  border-color: var(--urgent);
+}
+#queueList li.urgent .label { color: var(--urgent); }
+
+#queueList li.empty, #tableList li.empty {
+  color: var(--fg-dim);
+  font-style: italic;
+  text-align: center;
+  background: transparent;
+  border-style: dashed;
+}
+
+.label { font-weight: 500; }
+.meta { color: var(--fg-dim); font-size: 11px; }
+.dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.dot.urgent { background: var(--urgent); }
+.dot.idle { background: var(--good); }

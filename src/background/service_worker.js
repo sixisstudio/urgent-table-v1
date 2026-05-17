@@ -1,24 +1,34 @@
-// Urgent Table — Service Worker (v0.1.0 detection-only)
+// Urgent Table — Service Worker (v0.2.0 — FIFO queue + persistence)
 //
-// Listens for WebSocket frames captured by ws_proxy.js (MAIN world) and
-// relayed via content/relay.js (ISOLATED world) over a long-lived port.
-// Filters for gotOmaha snapshots on the game-ws auth channel, identifies
-// per-tab whose seat is currently to act (game.move), compares to the hero
-// seat (the seat with real face-up cards), and logs a console line every
-// time a table transitions urgent ON or urgent OFF.
+// Detects per-tab urgency from gotOmaha snapshots and maintains a global
+// FIFO queue of urgent tables ordered by `urgentSince` (whoever buzzed
+// first is at the head).
 //
-// No queue, no popup, no window-moving yet — those land in v0.2 / v0.3 /
-// v0.4 increments. The point of v0.1.0 is to prove the detection signal
-// is reliable end-to-end before any UI or staging is built.
+// All mutating state lives in `state` but is mirrored into
+// chrome.storage.session on every change. Per the council pre-build review,
+// the MV3 SW can be evicted at any moment and the alarm-driven keepalive
+// is not reliable — storage is the idiomatic replacement for global state.
+// On SW boot we rehydrate from storage and reconcile against open tabs.
+//
+// Window-moving is NOT in this version. The queue is purely informational
+// here; it becomes the input to staging in v0.4.
 
 import { isRealCard } from '../lib/card_codec.js';
 
 const RELAY_NS = '__ut_v1__';
 const HIJACK_HOST = 'game.hijack.poker';
+const STORAGE_KEY = 'ut_state_v1';
 
-// ─── Per-tab state ────────────────────────────────────────────────
-// Map<tabId, { perTable: Map<gameID, {heroSeat, currentActorSeat, urgent, lastTransitionAt}> }>
-const state = { perTab: new Map() };
+// ─── Per-tab state (in-memory mirror of storage) ───────────────────
+// state.perTab: Map<tabId, { perTable: Map<gameID, TableEntry>, startedAt }>
+// state.queue:  Array<{ tabId, gameID, urgentSince }>   // FIFO order
+// state.settings: { enabled: bool }
+const state = {
+  perTab: new Map(),
+  queue: [],
+  settings: { enabled: true },
+  bootedAt: Date.now(),
+};
 
 function ensureTab(tabId) {
   if (state.perTab.has(tabId)) return state.perTab.get(tabId);
@@ -32,25 +42,127 @@ function ensureTable(tabId, gameID) {
   if (tab.perTable.has(gameID)) return tab.perTable.get(gameID);
   const ts = {
     gameID,
-    heroSeat: 0,        // 0 = unknown / spectator
-    currentActorSeat: 0, // 0 = no one on the clock
+    heroSeat: 0,
+    currentActorSeat: 0,
     urgent: false,
-    lastTransitionAt: 0,
+    urgentSince: 0,
+    lastSnapshotAt: 0,
+    handNo: '',
   };
   tab.perTable.set(gameID, ts);
   return ts;
 }
 
-// ─── Keep-alive (MV3 SWs evict after ~30s idle) ───────────────────
+// ─── Storage persistence ──────────────────────────────────────────
+// Mirror in-memory state to chrome.storage.session on every mutation.
+// Map+nested structures are serialised to plain arrays so structured-clone
+// (storage's transport) is happy.
+function serializeState() {
+  const tabs = [];
+  for (const [tabId, t] of state.perTab) {
+    const tables = [];
+    for (const [gameID, ts] of t.perTable) {
+      tables.push({
+        gameID, heroSeat: ts.heroSeat, currentActorSeat: ts.currentActorSeat,
+        urgent: ts.urgent, urgentSince: ts.urgentSince,
+        lastSnapshotAt: ts.lastSnapshotAt, handNo: ts.handNo,
+      });
+    }
+    tabs.push({ tabId, startedAt: t.startedAt, tables });
+  }
+  return {
+    tabs,
+    queue: state.queue.slice(),
+    settings: { ...state.settings },
+    bootedAt: state.bootedAt,
+    serializedAt: Date.now(),
+  };
+}
+
+let _persistTimer = null;
+function schedulePersist() {
+  // Coalesce bursts (many snapshots in one tick) into a single storage write
+  // ~30 ms later. Still well under any meaningful staleness window.
+  if (_persistTimer) return;
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    chrome.storage.session.set({ [STORAGE_KEY]: serializeState() }).catch((e) => {
+      console.warn('[ut] storage.session persist failed:', e && e.message);
+    });
+  }, 30);
+}
+
+async function rehydrate() {
+  try {
+    const r = await chrome.storage.session.get([STORAGE_KEY]);
+    const s = r && r[STORAGE_KEY];
+    if (!s) return;
+    state.settings = { enabled: true, ...(s.settings || {}) };
+    state.queue = Array.isArray(s.queue) ? s.queue.slice() : [];
+    if (Array.isArray(s.tabs)) {
+      for (const t of s.tabs) {
+        const tab = ensureTab(t.tabId);
+        tab.startedAt = t.startedAt || tab.startedAt;
+        for (const ts of (t.tables || [])) {
+          const e = ensureTable(t.tabId, ts.gameID);
+          Object.assign(e, ts);
+        }
+      }
+    }
+    // Reconcile: drop queue entries for tabs that no longer exist.
+    const liveTabIds = new Set();
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    for (const t of allTabs) liveTabIds.add(t.id);
+    const before = state.queue.length;
+    state.queue = state.queue.filter(q => liveTabIds.has(q.tabId));
+    for (const tabId of Array.from(state.perTab.keys())) {
+      if (!liveTabIds.has(tabId)) state.perTab.delete(tabId);
+    }
+    if (before !== state.queue.length) {
+      console.log(`[ut] rehydrate reconcile: dropped ${before - state.queue.length} stale queue entries`);
+    }
+    if (state.queue.length > 0 || state.perTab.size > 0) {
+      console.log(`[ut] rehydrated: ${state.perTab.size} tab(s), ${state.queue.length} queued`);
+    }
+  } catch (e) {
+    console.warn('[ut] rehydrate failed:', e && e.message);
+  }
+}
+
+// ─── Queue helpers ────────────────────────────────────────────────
+function queueIndex(tabId, gameID) {
+  for (let i = 0; i < state.queue.length; i++) {
+    const q = state.queue[i];
+    if (q.tabId === tabId && q.gameID === gameID) return i;
+  }
+  return -1;
+}
+
+function enqueueUrgent(tabId, gameID, urgentSince) {
+  if (queueIndex(tabId, gameID) !== -1) return;
+  state.queue.push({ tabId, gameID, urgentSince });
+}
+
+function dequeueUrgent(tabId, gameID) {
+  const i = queueIndex(tabId, gameID);
+  if (i !== -1) state.queue.splice(i, 1);
+}
+
+function dequeueTab(tabId) {
+  state.queue = state.queue.filter(q => q.tabId !== tabId);
+}
+
+// ─── Keep-alive ───────────────────────────────────────────────────
 chrome.alarms.create('ut-keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ut-keepalive') {
     const n = state.perTab.size;
-    if (n > 0) console.log(`[ut] keepalive: ${n} active Hijack tab(s)`);
+    const q = state.queue.length;
+    if (n > 0 || q > 0) console.log(`[ut] keepalive: ${n} tab(s), ${q} queued`);
   }
 });
 
-// ─── Programmatic MAIN-world proxy injection ──────────────────────
+// ─── MAIN-world proxy injection ───────────────────────────────────
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   let url;
@@ -72,11 +184,13 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (state.perTab.has(tabId)) {
     state.perTab.delete(tabId);
+    dequeueTab(tabId);
     console.log(`[ut] tab ${tabId} closed; cleared state`);
+    schedulePersist();
   }
 });
 
-// ─── Port relay (frames come in here) ─────────────────────────────
+// ─── Port relay ───────────────────────────────────────────────────
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'ut-relay') return;
   const tabId = port.sender && port.sender.tab && port.sender.tab.id;
@@ -93,7 +207,6 @@ function dispatchRelayMessage(tabId, msg) {
     case 'proxy_installed':
     case 'relay_loaded':
     case 'socket_open':
-      // ack-only; nothing to do in v0.1.0
       return;
     case 'frame':
       processFrame(tabId, msg);
@@ -104,11 +217,10 @@ function dispatchRelayMessage(tabId, msg) {
   }
 }
 
-// ─── Frame processing ─────────────────────────────────────────────
+// ─── Frame parsing ────────────────────────────────────────────────
 function decodeData(encData) {
   if (!encData) return null;
   if (encData.type === 'string') return encData.value;
-  // We only need string frames for gotOmaha — binary heartbeats can be skipped
   return null;
 }
 
@@ -121,10 +233,6 @@ function parseGameWSFrame(data) {
   return { event: parsed.event, payload: parsed };
 }
 
-/**
- * Hero seat = the seat whose p{N}card slots hold real face-up cards.
- * Returns 0 when no seat has real cards yet (spectator or pre-deal).
- */
 function resolveHeroSeat(game) {
   for (let i = 1; i <= 10; i++) {
     const cards = [
@@ -136,10 +244,6 @@ function resolveHeroSeat(game) {
   return 0;
 }
 
-/**
- * Current actor seat is the integer parse of game.move.
- * Hijack stores it as a string; '0' / '' / missing means no one is on the clock.
- */
 function resolveCurrentActorSeat(game) {
   const m = game && game.move;
   if (m === undefined || m === null || m === '' || m === '0') return 0;
@@ -148,20 +252,18 @@ function resolveCurrentActorSeat(game) {
 }
 
 function processFrame(tabId, msg) {
-  // Only the auth'd game-ws channel carries gotOmaha
   if (!msg.url || !msg.url.includes('game-ws.hijackpoker.com')) return;
-
   const raw = decodeData(msg.data);
   const parsed = parseGameWSFrame(raw);
   if (!parsed || parsed.event !== 'gotOmaha') return;
-
   const game = parsed.payload.game;
   if (!game || !game.gameID) return;
 
   const ts = ensureTable(tabId, game.gameID);
+  const now = Date.now();
+  ts.lastSnapshotAt = now;
+  if (game.hand) ts.handNo = String(game.hand);
 
-  // Refresh hero seat every snapshot — it can change between hands if hero
-  // sits out then back in, or if we joined the table after a hand started.
   const heroSeat = resolveHeroSeat(game);
   if (heroSeat !== ts.heroSeat) {
     if (ts.heroSeat === 0 && heroSeat !== 0) {
@@ -173,17 +275,51 @@ function processFrame(tabId, msg) {
   const actorSeat = resolveCurrentActorSeat(game);
   ts.currentActorSeat = actorSeat;
 
-  // Urgency = hero is the current actor.
-  const nowUrgent = heroSeat !== 0 && actorSeat === heroSeat;
+  const nowUrgent = state.settings.enabled && heroSeat !== 0 && actorSeat === heroSeat;
   if (nowUrgent !== ts.urgent) {
     ts.urgent = nowUrgent;
-    ts.lastTransitionAt = Date.now();
     if (nowUrgent) {
-      console.log(`[ut] URGENT ON  tab=${tabId} table=${game.gameID} (hand ${game.hand || '?'}, seat=${heroSeat})`);
+      ts.urgentSince = now;
+      enqueueUrgent(tabId, game.gameID, now);
+      console.log(`[ut] URGENT ON  tab=${tabId} table=${game.gameID} (hand ${ts.handNo || '?'}, seat=${heroSeat}, queuePos=${queueIndex(tabId, game.gameID) + 1}/${state.queue.length})`);
     } else {
-      console.log(`[ut] URGENT OFF tab=${tabId} table=${game.gameID} (actor now seat ${actorSeat || 'none'})`);
+      ts.urgentSince = 0;
+      dequeueUrgent(tabId, game.gameID);
+      console.log(`[ut] URGENT OFF tab=${tabId} table=${game.gameID} (actor now seat ${actorSeat || 'none'}; remaining queue=${state.queue.length})`);
     }
   }
+  schedulePersist();
 }
 
-console.log('[ut] service worker booted v0.1.0 — detection-only mode');
+// ─── Popup message handler ────────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg[RELAY_NS] !== 1) return false;
+  switch (msg.kind) {
+    case 'popup_get_state':
+      sendResponse({ ok: true, state: serializeState() });
+      return false;  // sync response
+    case 'popup_set_enabled': {
+      state.settings.enabled = !!msg.value;
+      console.log(`[ut] enabled = ${state.settings.enabled}`);
+      // If we just disabled, clear urgency from every table so the queue empties.
+      if (!state.settings.enabled) {
+        for (const tab of state.perTab.values()) {
+          for (const ts of tab.perTable.values()) {
+            if (ts.urgent) { ts.urgent = false; ts.urgentSince = 0; }
+          }
+        }
+        state.queue = [];
+      }
+      schedulePersist();
+      sendResponse({ ok: true });
+      return false;
+    }
+  }
+  return false;
+});
+
+// ─── Boot ─────────────────────────────────────────────────────────
+(async () => {
+  await rehydrate();
+})();
+console.log('[ut] service worker booted v0.2.0 — queue + popup mode');

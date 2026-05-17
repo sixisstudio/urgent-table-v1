@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.1.0",
-  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.1.0 = detection-only console logging.",
+  "version": "0.2.0",
+  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.2.0 adds FIFO queue + popup UI; window-moving lands in v0.4.",
   "permissions": [
     "scripting",
     "storage",
@@ -22,7 +22,8 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Urgent Table (detection only — popup lands in v0.2)"
+    "default_popup": "src/popup/popup.html",
+    "default_title": "Urgent Table"
   },
   "content_scripts": [
     {
