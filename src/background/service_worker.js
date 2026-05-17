@@ -24,9 +24,11 @@ const STAGE_RECT_KEY = 'ut_stage_rect_v1';  // persistent — in chrome.storage.
 // state.perTab: Map<tabId, { perTable: Map<gameID, TableEntry>, startedAt }>
 // state.queue:  Array<{ tabId, gameID, urgentSince }>   // FIFO order
 // state.settings: { enabled: bool }
+// state.stage = null OR { tabId, gameID, windowId, homeBounds: {left, top, width, height, state}, stagedAt }
 const state = {
   perTab: new Map(),
   queue: [],
+  stage: null,
   settings: { enabled: true },
   bootedAt: Date.now(),
 };
@@ -74,6 +76,7 @@ function serializeState() {
   return {
     tabs,
     queue: state.queue.slice(),
+    stage: state.stage ? { ...state.stage } : null,
     settings: { ...state.settings },
     bootedAt: state.bootedAt,
     serializedAt: Date.now(),
@@ -100,6 +103,7 @@ async function rehydrate() {
     if (!s) return;
     state.settings = { enabled: true, ...(s.settings || {}) };
     state.queue = Array.isArray(s.queue) ? s.queue.slice() : [];
+    state.stage = s.stage || null;
     if (Array.isArray(s.tabs)) {
       for (const t of s.tabs) {
         const tab = ensureTab(t.tabId);
@@ -122,8 +126,17 @@ async function rehydrate() {
     if (before !== state.queue.length) {
       console.log(`[ut] rehydrate reconcile: dropped ${before - state.queue.length} stale queue entries`);
     }
-    if (state.queue.length > 0 || state.perTab.size > 0) {
-      console.log(`[ut] rehydrated: ${state.perTab.size} tab(s), ${state.queue.length} queued`);
+    // Reconcile stage: tab must still exist and still be urgent.
+    if (state.stage) {
+      const stillThere = liveTabIds.has(state.stage.tabId)
+        && queueIndex(state.stage.tabId, state.stage.gameID) !== -1;
+      if (!stillThere) {
+        console.log(`[ut] rehydrate: stage entry for tab=${state.stage.tabId} is stale, clearing`);
+        state.stage = null;
+      }
+    }
+    if (state.queue.length > 0 || state.perTab.size > 0 || state.stage) {
+      console.log(`[ut] rehydrated: ${state.perTab.size} tab(s), ${state.queue.length} queued, stage=${state.stage ? state.stage.tabId : 'none'}`);
     }
   } catch (e) {
     console.warn('[ut] rehydrate failed:', e && e.message);
@@ -186,6 +199,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (state.perTab.has(tabId)) {
     state.perTab.delete(tabId);
     dequeueTab(tabId);
+    if (state.stage && state.stage.tabId === tabId) {
+      console.log(`[ut] tab ${tabId} closed while staged; abandoning home, advancing queue`);
+      state.stage = null;
+      // Don't try to restore — the home is gone. Pull next from queue.
+      ensureStageInSync();
+    }
     console.log(`[ut] tab ${tabId} closed; cleared state`);
     schedulePersist();
   }
@@ -304,6 +323,7 @@ function tryFastClear(tabId, msg) {
   dequeueUrgent(tabId, gameID);
   console.log(`[ut] URGENT OFF (fast)  tab=${tabId} table=${gameID} action=${actionLabel} seat=${seatId}; remaining queue=${state.queue.length}`);
   schedulePersist();
+  ensureStageInSync();
 }
 
 function processFrame(tabId, msg) {
@@ -348,8 +368,190 @@ function processFrame(tabId, msg) {
       dequeueUrgent(tabId, game.gameID);
       console.log(`[ut] URGENT OFF (snap)  tab=${tabId} table=${game.gameID} (actor now seat ${actorSeat || 'none'}; remaining queue=${state.queue.length})`);
     }
+    schedulePersist();
+    ensureStageInSync();
+    return;
   }
   schedulePersist();
+}
+
+// ─── Window staging (v0.4.1) ──────────────────────────────────────
+// The stage rect (from v0.4.0 "Set stage position") tells us WHERE every
+// urgent table should be snapped on-screen. v0.4.1 wires the actual move:
+//   URGENT ON  → push to FIFO queue → if nothing currently staged, stage
+//                the queue head by recording its current window bounds as
+//                "home" and chrome.windows.update'ing it to the stage rect.
+//   URGENT OFF → if the unstaging table was the staged one, restore its
+//                window to its home bounds; if the queue still has entries,
+//                stage the new head.
+//
+// Per the council pre-build review:
+//   - Two-step state transition: Chrome forbids combining state:'normal'
+//     with bounds in the same windows.update call when the window is
+//     currently fullscreen/maximized/minimized. We do state change first,
+//     then bounds.
+//   - Fullscreen Spaces on macOS are hostile: refuse to stage windows in
+//     state 'fullscreen' or 'minimized'.
+//   - Track displayId; if the saved display is no longer present, fall
+//     back to primary so the rect doesn't land off-screen.
+//   - Mutex covers full read-modify-write — two URGENT ON's in the same
+//     tick can't race into the stage.
+//   - One Hijack table per Chrome window required (auto-popping via
+//     windows.create({tabId}) is detach = WebGL tear-down). Tabs that
+//     share a window with others get skipped + warned (popup is fine for
+//     v0.4.1; in-popup warning lands when needed).
+
+// Promise chain mutex for stage operations
+let stageOpChain = Promise.resolve();
+function withStageLock(fn) {
+  const next = stageOpChain.then(fn).catch(e => { console.warn('[ut] stage op error:', e && e.message); });
+  stageOpChain = next.then(() => {});
+  return next;
+}
+
+async function getStageRect() {
+  try {
+    const r = await chrome.storage.local.get([STAGE_RECT_KEY]);
+    return (r && r[STAGE_RECT_KEY]) || null;
+  } catch (e) { return null; }
+}
+
+async function resolveEffectiveStageRect(saved) {
+  if (!saved) return null;
+  let effective = { left: saved.left, top: saved.top, width: saved.width, height: saved.height };
+  try {
+    const displays = await chrome.system.display.getInfo();
+    if (saved.displayId && !displays.find(d => d.id === saved.displayId)) {
+      const primary = displays.find(d => d.isPrimary) || displays[0];
+      if (primary) {
+        // Clamp to primary workArea so it doesn't land off-screen
+        effective.left = Math.max(primary.workArea.left, Math.min(saved.left,
+          primary.workArea.left + primary.workArea.width - saved.width));
+        effective.top = Math.max(primary.workArea.top, Math.min(saved.top,
+          primary.workArea.top + primary.workArea.height - saved.height));
+        console.warn(`[ut] stage display ${saved.displayId} not present; clamped to primary`);
+      }
+    }
+  } catch (e) { /* leave effective as-is */ }
+  return effective;
+}
+
+async function stageTable(tabId, gameID) {
+  return withStageLock(async () => {
+    if (state.stage) {
+      // Already staged something else — let the existing entry play out
+      return;
+    }
+    // Tab still exist?
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) { dequeueUrgent(tabId, gameID); schedulePersist(); return; }
+
+    // One-tab-per-window enforcement
+    const sameWindowTabs = await chrome.tabs.query({ windowId: tab.windowId }).catch(() => []);
+    if (sameWindowTabs.length > 1) {
+      console.warn(`[ut] tab ${tabId} shares window ${tab.windowId} with ${sameWindowTabs.length - 1} other tab(s) — skipping stage. Move the Hijack table to its own window to enable staging.`);
+      return;
+    }
+
+    // Read current window
+    const win = await chrome.windows.get(tab.windowId).catch(() => null);
+    if (!win) return;
+    if (win.state === 'fullscreen' || win.state === 'minimized') {
+      console.warn(`[ut] tab ${tabId} window state=${win.state} — refusing to stage (would fight OS state). Exit fullscreen first.`);
+      return;
+    }
+    if (typeof win.left !== 'number') {
+      console.warn(`[ut] tab ${tabId} window has no bounds (state=${win.state}) — skipping`);
+      return;
+    }
+
+    // Resolve stage rect
+    const savedRect = await getStageRect();
+    if (!savedRect) {
+      console.warn('[ut] no stage rect saved — open the popup and click "Set stage position" to enable staging');
+      return;
+    }
+    const target = await resolveEffectiveStageRect(savedRect);
+    if (!target) return;
+
+    // Record home bounds BEFORE any move
+    const homeBounds = {
+      left: win.left, top: win.top, width: win.width, height: win.height,
+      state: win.state || 'normal',
+    };
+
+    // Two-step transition: normalize state first, then bounds
+    if (win.state && win.state !== 'normal') {
+      try { await chrome.windows.update(tab.windowId, { state: 'normal' }); }
+      catch (e) { console.warn(`[ut] state→normal failed: ${e.message}`); return; }
+    }
+    try {
+      await chrome.windows.update(tab.windowId, {
+        left: target.left, top: target.top, width: target.width, height: target.height,
+        focused: true,
+      });
+    } catch (e) {
+      console.warn(`[ut] windows.update bounds failed: ${e.message}`);
+      return;
+    }
+
+    state.stage = {
+      tabId, gameID, windowId: tab.windowId,
+      homeBounds, stagedAt: Date.now(),
+    };
+    schedulePersist();
+    console.log(`[ut] STAGED  tab=${tabId} table=${gameID} → (${target.left},${target.top}) ${target.width}×${target.height} (home was (${homeBounds.left},${homeBounds.top}) ${homeBounds.width}×${homeBounds.height} state=${homeBounds.state})`);
+  });
+}
+
+async function unstageCurrent(reason) {
+  return withStageLock(async () => {
+    const s = state.stage;
+    if (!s) return;
+    state.stage = null;
+    schedulePersist();
+
+    const tab = await chrome.tabs.get(s.tabId).catch(() => null);
+    if (!tab) {
+      console.log(`[ut] UNSTAGE tab=${s.tabId} table=${s.gameID} reason=${reason} (tab gone)`);
+    } else {
+      try {
+        const home = s.homeBounds;
+        // Restore bounds (always to {left, top, width, height}). If home
+        // was a non-normal state we don't try to fight macOS by going back
+        // into fullscreen/maximized — normal is the right resting state.
+        await chrome.windows.update(s.windowId, {
+          left: home.left, top: home.top, width: home.width, height: home.height,
+        });
+        console.log(`[ut] UNSTAGE tab=${s.tabId} table=${s.gameID} reason=${reason} → restored (${home.left},${home.top}) ${home.width}×${home.height}`);
+      } catch (e) {
+        console.warn(`[ut] unstage restore failed: ${e.message}`);
+      }
+    }
+  }).then(() => {
+    // After unstage, pull next from queue (outside the same lock so the
+    // recursive stageTable picks up cleanly).
+    if (state.queue.length > 0) {
+      const head = state.queue[0];
+      stageTable(head.tabId, head.gameID);
+    }
+  });
+}
+
+// Called after every queue mutation to keep stage state in sync.
+function ensureStageInSync() {
+  if (state.stage) {
+    const idx = queueIndex(state.stage.tabId, state.stage.gameID);
+    if (idx === -1) {
+      // The staged table is no longer urgent
+      unstageCurrent('off-queue');
+    }
+    return;
+  }
+  if (state.queue.length > 0) {
+    const head = state.queue[0];
+    stageTable(head.tabId, head.gameID);
+  }
 }
 
 // ─── Stage position capture (v0.4.0) ──────────────────────────────
@@ -499,6 +701,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
         }
         state.queue = [];
+        // If something was staged, send it home.
+        if (state.stage) unstageCurrent('disabled');
       }
       schedulePersist();
       sendResponse({ ok: true });
@@ -566,4 +770,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.0 — stage capture (no snap yet)');
+console.log('[ut] service worker booted v0.4.1 — window staging active');

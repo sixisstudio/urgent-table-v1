@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.4.0",
-  "description": "Detects which Hijack Poker table requires your action and brings it into a fixed stage window. v0.4.0 adds Set stage position capture (no window-snapping yet — that lands in v0.4.1).",
+  "version": "0.4.1",
+  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.1 is the first build that actually moves windows.",
   "permissions": [
     "scripting",
     "storage",
