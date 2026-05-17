@@ -118,15 +118,34 @@ function render() {
 
   // Build a lookup: (tabId, gameID) → table entry
   const tableLookup = new Map();
-  const tabStarted = new Map();
   for (const t of latest.tabs || []) {
-    tabStarted.set(t.tabId, t.startedAt);
     for (const ts of (t.tables || [])) {
       tableLookup.set(`${t.tabId}:${ts.gameID}`, { tabId: t.tabId, ...ts });
     }
   }
 
-  // Queue list
+  // v0.4.5: collapse by gameID for display. Multiple tabs on the same
+  // Hijack table all show one row. We pick the "best" entry per gameID:
+  //   - prefer one whose heroSeat != 0 (player view over spectator view)
+  //   - prefer one currently urgent
+  //   - prefer most recent snapshot
+  // Tab count is shown in parentheses so the duplication isn't hidden.
+  const byGameID = new Map();
+  for (const ts of tableLookup.values()) {
+    const cur = byGameID.get(ts.gameID);
+    if (!cur) {
+      byGameID.set(ts.gameID, { entry: ts, count: 1 });
+      continue;
+    }
+    cur.count++;
+    // Score: heroSeat present + urgent + recent snapshot
+    const score = (x) =>
+      ((x.heroSeat ? 100 : 0) + (x.urgent ? 50 : 0) + ((x.lastSnapshotAt || 0) / 1e12));
+    if (score(ts) > score(cur.entry)) cur.entry = ts;
+  }
+
+  // Queue list — also dedupe by gameID so a multi-tab table doesn't
+  // produce multiple urgent rows. First-fired wins.
   el.queueList.innerHTML = '';
   if (!latest.queue || latest.queue.length === 0) {
     const li = document.createElement('li');
@@ -134,8 +153,15 @@ function render() {
     li.textContent = 'No tables waiting on you.';
     el.queueList.appendChild(li);
   } else {
+    const seenGameIDs = new Set();
+    const dedupedQueue = [];
+    for (const q of latest.queue) {
+      if (seenGameIDs.has(q.gameID)) continue;
+      seenGameIDs.add(q.gameID);
+      dedupedQueue.push(q);
+    }
     const now = Date.now();
-    latest.queue.forEach((q, i) => {
+    dedupedQueue.forEach((q, i) => {
       const entry = tableLookup.get(`${q.tabId}:${q.gameID}`) || {};
       const li = document.createElement('li');
       li.className = 'urgent';
@@ -151,22 +177,23 @@ function render() {
     });
   }
 
-  // All known tables
+  // All known tables — one row per unique gameID
   el.tableList.innerHTML = '';
-  const allTables = Array.from(tableLookup.values());
-  if (allTables.length === 0) {
+  if (byGameID.size === 0) {
     const li = document.createElement('li');
     li.className = 'empty';
     li.textContent = 'No Hijack tabs detected. Open a table to start.';
     el.tableList.appendChild(li);
   } else {
-    allTables.sort((a, b) => a.gameID - b.gameID);
-    for (const ts of allTables) {
+    const rows = Array.from(byGameID.values());
+    rows.sort((a, b) => a.entry.gameID - b.entry.gameID);
+    for (const { entry: ts, count } of rows) {
       const li = document.createElement('li');
       const label = document.createElement('span');
       label.className = 'label';
       const dotClass = ts.urgent ? 'urgent' : 'idle';
-      label.innerHTML = `<span class="dot ${dotClass}"></span>table ${ts.gameID}${ts.handNo ? ' · hand ' + ts.handNo : ''}`;
+      const tabSuffix = count > 1 ? ` <span style="opacity:.6">(${count} tabs)</span>` : '';
+      label.innerHTML = `<span class="dot ${dotClass}"></span>table ${ts.gameID}${ts.handNo ? ' · hand ' + ts.handNo : ''}${tabSuffix}`;
       const meta = document.createElement('span');
       meta.className = 'meta';
       meta.textContent = ts.heroSeat

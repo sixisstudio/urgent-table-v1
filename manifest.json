@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.4.4",
-  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.4 adds urgency timeout, dead-tab reconcile, and verbose reinject probe logging.",
+  "version": "0.4.5",
+  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.5 collapses duplicate-tab rows in the popup.",
   "permissions": [
     "scripting",
     "storage",

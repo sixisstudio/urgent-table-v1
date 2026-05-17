@@ -943,4 +943,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.4 — urgency timeout + dead-tab reconcile + verbose probe');
+console.log('[ut] service worker booted v0.4.5 — popup dedupes duplicate-tab rows');
