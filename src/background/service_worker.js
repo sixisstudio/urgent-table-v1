@@ -29,6 +29,7 @@ const state = {
   perTab: new Map(),
   queue: [],
   stage: null,
+  heroGUID: null,  // v0.4.3: captured from any outgoing frame's playerGUID field
   settings: { enabled: true },
   bootedAt: Date.now(),
 };
@@ -85,6 +86,7 @@ function serializeState() {
     tabs,
     queue: state.queue.slice(),
     stage: state.stage ? { ...state.stage } : null,
+    heroGUID: state.heroGUID,
     settings: { ...state.settings },
     bootedAt: state.bootedAt,
     serializedAt: Date.now(),
@@ -112,6 +114,7 @@ async function rehydrate() {
     state.settings = { enabled: true, ...(s.settings || {}) };
     state.queue = Array.isArray(s.queue) ? s.queue.slice() : [];
     state.stage = s.stage || null;
+    state.heroGUID = s.heroGUID || null;
     if (Array.isArray(s.tabs)) {
       for (const t of s.tabs) {
         const tab = ensureTab(t.tabId);
@@ -176,13 +179,45 @@ function dequeueTab(tabId) {
 
 // ─── Keep-alive ───────────────────────────────────────────────────
 chrome.alarms.create('ut-keepalive', { periodInMinutes: 0.5 });
+// v0.4.3: every minute, scan for Hijack tabs that exist in Chrome but have
+// never sent a relay message. Most likely cause: tab was loading / discarded
+// when the SW first auto-injected, or opened via a code path that doesn't
+// fire webNavigation.onCommitted. The proxy + relay both have window-scope
+// guards so re-injecting an already-running pair is a no-op.
+chrome.alarms.create('ut-reinject-probe', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ut-keepalive') {
     const n = state.perTab.size;
     const q = state.queue.length;
     if (n > 0 || q > 0) console.log(`[ut] keepalive: ${n} tab(s), ${q} queued`);
+  } else if (alarm.name === 'ut-reinject-probe') {
+    reinjectMissingTabs();
   }
 });
+
+async function reinjectMissingTabs() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] }); }
+  catch (e) { return; }
+  for (const tab of tabs) {
+    if (state.perTab.has(tab.id)) continue;
+    console.log(`[ut] re-inject probe: tab ${tab.id} not yet tracked — injecting`);
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        world: 'ISOLATED',
+        files: ['src/content/relay.js'],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        files: ['src/background/ws_proxy.js'],
+      });
+    } catch (e) {
+      // Discarded / unreachable tab — try again next minute
+    }
+  }
+}
 
 // ─── MAIN-world proxy injection ───────────────────────────────────
 chrome.webNavigation.onCommitted.addListener(async (details) => {
@@ -261,7 +296,25 @@ function parseGameWSFrame(data) {
   return { event: parsed.event, payload: parsed };
 }
 
+// v0.4.3: hero detection by GUID match against p{N}data.
+// Each p{N}data is a pipe-delimited string; index 1 is the seat-occupant's
+// playerGUID. When we know the hero's GUID (captured from any outgoing
+// frame), match it directly — never confuse a showdown reveal or another
+// player's visible cards for hero. Falls back to the old "any seat with
+// real cards" heuristic only when the GUID hasn't been captured yet
+// (fresh install, no hero action sent yet).
 function resolveHeroSeat(game) {
+  if (state.heroGUID) {
+    for (let i = 1; i <= 10; i++) {
+      const data = game[`p${i}data`];
+      if (typeof data === 'string') {
+        const parts = data.split('|');
+        if (parts[1] === state.heroGUID) return i;
+      }
+    }
+    return 0;  // GUID known, not at this table → spectator
+  }
+  // Fallback (used only briefly until first outgoing frame lands)
   for (let i = 1; i <= 10; i++) {
     const cards = [
       game[`p${i}card1`], game[`p${i}card2`], game[`p${i}card3`],
@@ -270,6 +323,34 @@ function resolveHeroSeat(game) {
     if (cards.some(isRealCard)) return i;
   }
   return 0;
+}
+
+// Capture hero's playerGUID from any outgoing frame. Setup, action,
+// subscribe, ping — they all carry it on the wire.
+function captureHeroGUID(rawData) {
+  if (typeof rawData !== 'string') return;
+  let payload = null;
+  if (rawData.startsWith('{')) {
+    try { payload = JSON.parse(rawData); } catch (e) {}
+  } else {
+    // socket.io EVENT framing: "4XX[<name>, <payload>]" (or just "<name>")
+    const m = rawData.match(/^4\d*(\[.+\])$/s);
+    if (m) {
+      try {
+        const arr = JSON.parse(m[1]);
+        if (Array.isArray(arr) && arr.length >= 2) payload = arr[1];
+      } catch (e) {}
+    }
+  }
+  if (!payload || typeof payload !== 'object') return;
+  const g = payload.playerGUID;
+  if (typeof g === 'string' && g.length >= 16) {
+    if (g !== state.heroGUID) {
+      console.log(`[ut] hero GUID captured: ${g.slice(0, 12)}…`);
+      state.heroGUID = g;
+      schedulePersist();
+    }
+  }
 }
 
 function resolveCurrentActorSeat(game) {
@@ -337,6 +418,9 @@ function tryFastClear(tabId, msg) {
 
 function processFrame(tabId, msg) {
   if (msg.dir === 'out') {
+    // v0.4.3: every outgoing frame is a chance to learn our own GUID
+    const raw = decodeData(msg.data);
+    captureHeroGUID(raw);
     tryFastClear(tabId, msg);
     return;
   }
@@ -534,15 +618,17 @@ async function unstageCurrent(reason) {
     if (!tab) {
       console.log(`[ut] UNSTAGE tab=${s.tabId} table=${s.gameID} reason=${reason} (tab gone)`);
     } else {
+      // v0.4.3: re-query current windowId. The user may have dragged the
+      // tab to a different window between stage and unstage. Using the
+      // stored windowId would target a window that's gone/wrong.
+      const currentWindowId = tab.windowId;
       try {
         const home = s.homeBounds;
-        // Restore bounds (always to {left, top, width, height}). If home
-        // was a non-normal state we don't try to fight macOS by going back
-        // into fullscreen/maximized — normal is the right resting state.
-        await chrome.windows.update(s.windowId, {
+        await chrome.windows.update(currentWindowId, {
           left: home.left, top: home.top, width: home.width, height: home.height,
         });
-        console.log(`[ut] UNSTAGE tab=${s.tabId} table=${s.gameID} reason=${reason} → restored (${home.left},${home.top}) ${home.width}×${home.height}`);
+        const note = currentWindowId !== s.windowId ? ` (tab moved to window ${currentWindowId})` : '';
+        console.log(`[ut] UNSTAGE tab=${s.tabId} table=${s.gameID} reason=${reason} → restored (${home.left},${home.top}) ${home.width}×${home.height}${note}`);
       } catch (e) {
         console.warn(`[ut] unstage restore failed: ${e.message}`);
       }
@@ -789,4 +875,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.2 — pendingActComplete grace window');
+console.log('[ut] service worker booted v0.4.3 — GUID-based hero, stale-windowId fix, reinject probe');
