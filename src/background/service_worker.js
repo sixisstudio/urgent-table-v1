@@ -64,6 +64,12 @@ function ensureTable(tabId, gameID) {
 }
 
 const PENDING_ACT_GRACE_MS = 2000;
+// v0.4.4: if a table has been urgent this long without a fresh snapshot
+// updating it, force URGENT OFF. Handles the case where the user exits a
+// Hijack table inside the client but leaves the Chrome tab open at a
+// lobby/empty screen — no more snapshots arrive, so urgency would otherwise
+// be stuck indefinitely.
+const URGENCY_TIMEOUT_MS = 30 * 1000;
 
 // ─── Storage persistence ──────────────────────────────────────────
 // Mirror in-memory state to chrome.storage.session on every mutation.
@@ -187,6 +193,7 @@ chrome.alarms.create('ut-keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.create('ut-reinject-probe', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ut-keepalive') {
+    pruneStaleUrgency();
     const n = state.perTab.size;
     const q = state.queue.length;
     if (n > 0 || q > 0) console.log(`[ut] keepalive: ${n} tab(s), ${q} queued`);
@@ -199,9 +206,20 @@ async function reinjectMissingTabs() {
   let tabs = [];
   try { tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] }); }
   catch (e) { return; }
+
+  const trackedIds = new Set(state.perTab.keys());
+  const liveIds = new Set();
+  // v0.4.4: verbose summary so we can diagnose missing tabs.
+  console.log(`[ut] reinject probe: ${tabs.length} Hijack tab(s) in Chrome (${trackedIds.size} tracked)`);
   for (const tab of tabs) {
+    liveIds.add(tab.id);
+    const status = state.perTab.has(tab.id) ? 'tracked' : 'NEW';
+    const flags = [];
+    if (tab.discarded) flags.push('discarded');
+    if (tab.status && tab.status !== 'complete') flags.push(tab.status);
+    if (tab.frozen) flags.push('frozen');
+    console.log(`[ut]   tab=${tab.id} [${status}${flags.length ? ' ' + flags.join(',') : ''}]`);
     if (state.perTab.has(tab.id)) continue;
-    console.log(`[ut] re-inject probe: tab ${tab.id} not yet tracked — injecting`);
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id, allFrames: true },
@@ -213,9 +231,59 @@ async function reinjectMissingTabs() {
         world: 'MAIN',
         files: ['src/background/ws_proxy.js'],
       });
+      console.log(`[ut]     injected into tab=${tab.id}`);
     } catch (e) {
-      // Discarded / unreachable tab — try again next minute
+      console.warn(`[ut]     inject failed for tab=${tab.id}: ${e.message}`);
     }
+  }
+
+  // v0.4.4: reconcile — any tracked tab whose tab no longer exists gets
+  // its state cleared. chrome.tabs.onRemoved usually fires, but edge cases
+  // (window close, crash, Chrome eviction) can skip it.
+  let removed = 0;
+  for (const tabId of Array.from(trackedIds)) {
+    if (!liveIds.has(tabId)) {
+      const exists = await chrome.tabs.get(tabId).then(() => true).catch(() => false);
+      if (!exists) {
+        state.perTab.delete(tabId);
+        dequeueTab(tabId);
+        if (state.stage && state.stage.tabId === tabId) {
+          state.stage = null;
+          ensureStageInSync();
+        }
+        removed++;
+      }
+    }
+  }
+  if (removed > 0) {
+    console.log(`[ut] reinject probe: reconciled ${removed} dead tab(s) out of state`);
+    schedulePersist();
+  }
+}
+
+// v0.4.4: walk every urgent table and force URGENT OFF on any that have
+// been urgent past URGENCY_TIMEOUT_MS without a fresh snapshot. Runs every
+// keepalive tick (~30s).
+function pruneStaleUrgency() {
+  const now = Date.now();
+  let pruned = 0;
+  for (const [tabId, tab] of state.perTab) {
+    for (const [gameID, ts] of tab.perTable) {
+      if (!ts.urgent) continue;
+      const idleMs = now - (ts.lastSnapshotAt || ts.urgentSince || now);
+      const urgentMs = now - (ts.urgentSince || now);
+      if (urgentMs > URGENCY_TIMEOUT_MS && idleMs > URGENCY_TIMEOUT_MS / 2) {
+        ts.urgent = false;
+        ts.urgentSince = 0;
+        dequeueUrgent(tabId, gameID);
+        console.warn(`[ut] URGENT OFF (timeout) tab=${tabId} table=${gameID} (urgent for ${Math.round(urgentMs/1000)}s, idle ${Math.round(idleMs/1000)}s — table likely exited)`);
+        pruned++;
+      }
+    }
+  }
+  if (pruned > 0) {
+    schedulePersist();
+    ensureStageInSync();
   }
 }
 
@@ -875,4 +943,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.3 — GUID-based hero, stale-windowId fix, reinject probe');
+console.log('[ut] service worker booted v0.4.4 — urgency timeout + dead-tab reconcile + verbose probe');

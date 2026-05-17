@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.4.3",
-  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.3 fixes spectator false-positives, stale windowId on unstage, and missing-tab capture.",
+  "version": "0.4.4",
+  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.4 adds urgency timeout, dead-tab reconcile, and verbose reinject probe logging.",
   "permissions": [
     "scripting",
     "storage",
