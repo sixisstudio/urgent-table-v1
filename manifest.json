@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.4.1",
-  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.1 is the first build that actually moves windows.",
+  "version": "0.4.2",
+  "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.2 fixes double-snap on fast-clear by suppressing stale snapshots in the grace window after a hero action.",
   "permissions": [
     "scripting",
     "storage",

@@ -51,10 +51,18 @@ function ensureTable(tabId, gameID) {
     urgentSince: 0,
     lastSnapshotAt: 0,
     handNo: '',
+    // v0.4.2: timestamp of the most recent fast-clear. Snapshots received
+    // within PENDING_ACT_GRACE_MS that still say move===heroSeat are
+    // ignored — server-side action processing has latency and a stale
+    // snapshot can race back ahead of the real "actor moved on" snapshot.
+    // Cleared the moment we see a snapshot where move !== heroSeat (or 0).
+    pendingActComplete: 0,
   };
   tab.perTable.set(gameID, ts);
   return ts;
 }
+
+const PENDING_ACT_GRACE_MS = 2000;
 
 // ─── Storage persistence ──────────────────────────────────────────
 // Mirror in-memory state to chrome.storage.session on every mutation.
@@ -320,6 +328,7 @@ function tryFastClear(tabId, msg) {
 
   ts.urgent = false;
   ts.urgentSince = 0;
+  ts.pendingActComplete = Date.now();
   dequeueUrgent(tabId, gameID);
   console.log(`[ut] URGENT OFF (fast)  tab=${tabId} table=${gameID} action=${actionLabel} seat=${seatId}; remaining queue=${state.queue.length}`);
   schedulePersist();
@@ -356,7 +365,17 @@ function processFrame(tabId, msg) {
   const actorSeat = resolveCurrentActorSeat(game);
   ts.currentActorSeat = actorSeat;
 
-  const nowUrgent = state.settings.enabled && heroSeat !== 0 && actorSeat === heroSeat;
+  // v0.4.2: pendingActComplete grace window. If we just fast-cleared on a
+  // hero outgoing action, suppress URGENT ON re-fires for ~2s while the
+  // server catches up. As soon as a snapshot says actor moved on, clear
+  // the flag so future urgency works normally.
+  if (actorSeat !== heroSeat) {
+    ts.pendingActComplete = 0;
+  }
+  let nowUrgent = state.settings.enabled && heroSeat !== 0 && actorSeat === heroSeat;
+  if (nowUrgent && ts.pendingActComplete && (now - ts.pendingActComplete < PENDING_ACT_GRACE_MS)) {
+    nowUrgent = false;  // stale snapshot during the grace window
+  }
   if (nowUrgent !== ts.urgent) {
     ts.urgent = nowUrgent;
     if (nowUrgent) {
@@ -770,4 +789,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.1 — window staging active');
+console.log('[ut] service worker booted v0.4.2 — pendingActComplete grace window');
