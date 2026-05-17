@@ -318,8 +318,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
+// ─── Auto-inject into existing Hijack tabs on SW boot ────────────
+// v0.2.1: webNavigation.onCommitted only fires on FUTURE navigations.
+// Tabs already open on game.hijack.poker when the extension is loaded
+// (or reloaded) get no content script and no MAIN-world proxy, so
+// frames don't flow and the user has to manually refresh. We fix that
+// by querying all currently-open Hijack tabs at boot and programmatically
+// injecting both scripts. Both have window-scope guards so double-inject
+// is a no-op.
+async function injectIntoExistingTabs() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] });
+  } catch (e) {
+    console.warn('[ut] tabs.query failed:', e && e.message);
+    return;
+  }
+  for (const tab of tabs) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        world: 'ISOLATED',
+        files: ['src/content/relay.js'],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        files: ['src/background/ws_proxy.js'],
+      });
+      console.log(`[ut] auto-injected into existing tab ${tab.id}`);
+    } catch (e) {
+      // Tabs that are mid-discard, chrome:// hops, or otherwise unreachable
+      // will throw — fine. Future navigations will be picked up by
+      // webNavigation.onCommitted.
+    }
+  }
+}
+
 // ─── Boot ─────────────────────────────────────────────────────────
 (async () => {
   await rehydrate();
+  await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.2.0 — queue + popup mode');
+console.log('[ut] service worker booted v0.2.1 — auto-inject mode');

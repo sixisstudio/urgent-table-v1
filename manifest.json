@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.2.0",
-  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.2.0 adds FIFO queue + popup UI; window-moving lands in v0.4.",
+  "version": "0.2.1",
+  "description": "Detects which Hijack Poker table requires your action and (later) brings it into a fixed stage window. v0.2.1 auto-injects into already-open Hijack tabs on reload (no more manual refresh).",
   "permissions": [
     "scripting",
     "storage",

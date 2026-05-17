@@ -7,6 +7,16 @@
 (() => {
   'use strict';
 
+  // v0.2.1: guard against double-injection. The SW programmatically re-injects
+  // this script into existing Hijack tabs on every boot so users don't have
+  // to refresh after reloading the extension; that means an extension reload
+  // can leave the previous instance's port + listener still alive when this
+  // copy runs. Without the guard we'd get duplicate frame forwarding.
+  if (window.__ut_v1_relay_installed__) return;
+  Object.defineProperty(window, '__ut_v1_relay_installed__', {
+    value: true, writable: false, configurable: false, enumerable: false,
+  });
+
   const RELAY_NS = '__ut_v1__';
   const PORT_NAME = 'ut-relay';
 
