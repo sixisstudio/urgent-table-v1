@@ -219,7 +219,7 @@ let lastStaleIds = [];
 if (el.rescanTabs) {
   el.rescanTabs.addEventListener('click', async () => {
     el.rescanTabs.disabled = true;
-    el.copyDebugStatus.textContent = 'rescanning…';
+    el.copyDebugStatus.textContent = 're-injecting + waiting 5s for frames…';
     el.staleList.style.display = 'none';
     el.reloadStale.style.display = 'none';
     const resp = await new Promise((res) => {
@@ -236,8 +236,8 @@ if (el.rescanTabs) {
     el.staleList.className = 'stale-box';
     if (resp.stale && resp.stale.length > 0) {
       lastStaleIds = resp.stale.map(s => s.tabId);
-      const items = resp.stale.map(s => `<li>Tab #${s.tabId} — ${(s.title || 'no title').slice(0, 60)}</li>`).join('');
-      el.staleList.innerHTML = `<strong>${resp.stale.length} tab(s) tracked but no frames captured.</strong> WebSocket likely pre-dates the proxy; reload to fix:<ul>${items}</ul>`;
+      const items = resp.stale.map(s => `<li>Tab #${s.tabId} (${s.reason || 'stale'}) — ${(s.title || 'no title').slice(0, 60)}</li>`).join('');
+      el.staleList.innerHTML = `<strong>${resp.stale.length} stale tab(s).</strong> WebSocket likely pre-dates proxy or content script never loaded. Reload to fix:<ul>${items}</ul>`;
       el.staleList.style.display = 'block';
       el.reloadStale.textContent = `Reload ${resp.stale.length} stale tabs`;
       el.reloadStale.style.display = '';

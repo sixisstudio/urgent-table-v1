@@ -967,10 +967,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true, state: serializeState() });
       return false;  // sync response
     case 'popup_rescan_tabs': {
-      // v0.4.9: force a re-inject NOW + identify stale tabs (tracked but
-      // never produced a gotOmaha frame, usually because their WebSocket
-      // pre-dates our proxy injection). Returns list so popup can offer
-      // a "Reload stale tabs" follow-up.
+      // v0.4.10: force a re-inject NOW + WAIT 5 seconds for relays to
+      // connect and gotOmaha frames to start flowing, THEN identify
+      // stale tabs. Earlier version checked immediately, before any
+      // newly-injected tabs had a chance to register — those tabs
+      // weren't in state.perTab yet so `if (!tracked) continue` skipped
+      // them entirely and we returned "0 stale" even when the user's
+      // problematic tabs were exactly those un-tracked ones.
+      //
+      // Stale criteria after the wait:
+      //   - Tab is a Hijack tab (in chrome.tabs.query result) AND
+      //   - Either: not in state.perTab (relay never connected → most
+      //     likely lobby/non-table page OR a content-script failure),
+      //   - Or: in state.perTab but perTable.size === 0 (relay connected
+      //     but proxy never saw a gotOmaha frame → WebSocket pre-dates
+      //     the proxy and needs a tab reload).
       (async () => {
         const tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] })
           .catch(() => []);
@@ -990,18 +1001,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             injected++;
           } catch (e) { /* discarded — skip */ }
         }
-        const now = Date.now();
+        // Wait for relays to connect + first snapshot to arrive
+        await new Promise(r => setTimeout(r, 5000));
         const stale = [];
         for (const tab of tabs) {
           const tracked = state.perTab.get(tab.id);
-          if (!tracked) continue;
-          const ageMs = (now / 1000 - (tracked.startedAt || 0)) * 1000;
-          // Stale = registered >30s ago AND no per-gameID tables seen
-          if (ageMs > 30_000 && tracked.perTable.size === 0) {
-            stale.push({ tabId: tab.id, title: tab.title || '', url: tab.url || '' });
+          let reason = null;
+          if (!tracked) reason = 'no relay';
+          else if (tracked.perTable.size === 0) reason = 'no tables';
+          if (reason) {
+            stale.push({ tabId: tab.id, title: tab.title || '', url: tab.url || '', reason });
           }
         }
-        console.log(`[ut] rescan: re-injected into ${injected}/${tabs.length}; ${stale.length} stale`);
+        console.log(`[ut] rescan: re-injected ${injected}/${tabs.length}, waited 5s, ${stale.length} stale`);
         sendResponse({ ok: true, scanned: tabs.length, injected, stale });
       })();
       return true;
@@ -1032,7 +1044,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ok: true,
           snapshot: {
             extension: 'Urgent Table',
-            version: '0.4.8',
+            version: '0.4.10',
             bootedAt: state.bootedAt,
             capturedAt: Date.now(),
             heroGUID: state.heroGUID ? (state.heroGUID.slice(0, 12) + '…') : null,
@@ -1126,4 +1138,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.9 — rescan + reload stale tabs');
+console.log('[ut] service worker booted v0.4.10 — rescan waits 5s + reports relay-missing tabs');
