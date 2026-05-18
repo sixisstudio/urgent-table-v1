@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Urgent Table",
   "short_name": "UrgentTable",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "description": "Detects which Hijack Poker table requires your action and snaps it into your configured stage rect. v0.4.9 adds Rescan + Reload stale tabs to recover missing-capture tables.",
   "permissions": [
     "scripting",
@@ -10,7 +10,8 @@
     "tabs",
     "webNavigation",
     "alarms",
-    "system.display"
+    "system.display",
+    "management"
   ],
   "host_permissions": [
     "https://game.hijack.poker/*",

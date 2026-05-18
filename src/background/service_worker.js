@@ -1103,7 +1103,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ok: true,
           snapshot: {
             extension: 'Urgent Table',
-            version: '0.4.13',
+            version: '0.4.14',
             bootedAt: state.bootedAt,
             capturedAt: Date.now(),
             heroGUID: state.heroGUID ? (state.heroGUID.slice(0, 12) + '…') : null,
@@ -1204,4 +1204,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.13 — auto-reload stale tabs (opt-in)');
+console.log('[ut] service worker booted v0.4.14 — live dashboard with cross-extension tab bar');

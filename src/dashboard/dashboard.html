@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Urgent Table — Live Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <nav class="dash-tabs">
+    <a class="dash-tab" id="tabHJK" href="#" target="_self">Hijack Logger</a>
+    <a class="dash-tab active" id="tabUT" href="#">Urgent Table</a>
+  </nav>
+
+  <header>
+    <div class="title">
+      <h1>Urgent Table</h1>
+      <span class="version" id="versionLabel">v0.4.14</span>
+    </div>
+    <div class="header-right">
+      <span class="clock" id="clock"></span>
+      <span class="refresh-pulse" id="pulse"></span>
+    </div>
+  </header>
+
+  <section id="banners"></section>
+
+  <section class="totals-strip">
+    <div class="metric"><div class="metric-value" id="queueLen">0</div><div class="metric-label">queue depth</div></div>
+    <div class="metric"><div class="metric-value" id="trackedTabs">0</div><div class="metric-label">tracked tabs</div></div>
+    <div class="metric"><div class="metric-value" id="trackedTables">0</div><div class="metric-label">tracked tables</div></div>
+    <div class="metric"><div class="metric-value" id="urgentCount">0</div><div class="metric-label">currently urgent</div></div>
+    <div class="metric"><div class="metric-value" id="stagedFlag">—</div><div class="metric-label">staged table</div></div>
+    <div class="metric"><div class="metric-value" id="heroGuid">—</div><div class="metric-label">hero GUID</div></div>
+  </section>
+
+  <div class="two-col">
+    <section class="card">
+      <h2>Urgent queue</h2>
+      <div id="queueGrid"><div class="empty">No tables waiting on you.</div></div>
+      <h2 style="margin-top:18px;">All tracked tables</h2>
+      <div id="tableGrid"><div class="empty">No tables.</div></div>
+    </section>
+
+    <section class="card">
+      <h2>Stage</h2>
+      <div class="output-row"><span class="output-label">Configured rect</span><span class="output-value" id="stageRect">not set</span></div>
+      <div class="output-row"><span class="output-label">Display ID</span><span class="output-value" id="stageDisp">—</span></div>
+      <div class="output-row"><span class="output-label">Currently staged</span><span class="output-value" id="currentStage">—</span></div>
+      <div class="output-row"><span class="output-label">SW booted</span><span class="output-value" id="bootedAt">—</span></div>
+
+      <h2 style="margin-top: 18px;">Settings</h2>
+      <label class="setting-row"><input type="checkbox" id="enabledCb"> <span>Enabled</span></label>
+      <label class="setting-row"><input type="checkbox" id="autoReloadCb"> <span>Auto-reload stale tabs</span></label>
+
+      <h2 style="margin-top: 18px;">Actions</h2>
+      <div class="action-row" style="flex-wrap:wrap;">
+        <button id="rescanTabs">Rescan tabs</button>
+        <button id="reloadStale" style="display:none;">Reload stale tabs</button>
+        <button id="copyDebug">Copy debug snapshot</button>
+        <span id="actionStatus" class="action-status"></span>
+      </div>
+      <div id="staleList" class="stale-list" style="display:none;"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Recent events <span class="hint">(last 60 SW log lines)</span></h2>
+    <pre id="eventLog" class="event-log">waiting for events…</pre>
+  </section>
+
+  <script src="dashboard.js" type="module"></script>
+</body>
+</html>

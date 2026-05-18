@@ -224,6 +224,14 @@ function render() {
 // Refresh "for X.Xs" counters every 500ms while the popup is open.
 setInterval(() => { if (latest && (latest.queue || []).length > 0) render(); }, 500);
 
+// ─── Open dashboard (v0.4.14) ─────────────────────────────────────
+const openDashBtn = document.getElementById('openDashboard');
+if (openDashBtn) {
+  openDashBtn.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/dashboard/dashboard.html') });
+  });
+}
+
 // ─── Rescan + reload stale tabs (v0.4.9) ──────────────────────────
 let lastStaleIds = [];
 if (el.rescanTabs) {
