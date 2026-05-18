@@ -224,13 +224,33 @@ function render() {
 // Refresh "for X.Xs" counters every 500ms while the popup is open.
 setInterval(() => { if (latest && (latest.queue || []).length > 0) render(); }, 500);
 
-// ─── Open dashboard (v0.4.14) ─────────────────────────────────────
+// ─── Open dashboard (v0.4.14, extended v0.4.15) ───────────────────
 const openDashBtn = document.getElementById('openDashboard');
 if (openDashBtn) {
   openDashBtn.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('src/dashboard/dashboard.html') });
   });
 }
+
+// v0.4.15: also expose the OTHER extension's dashboard from this popup.
+const openOtherBtn = document.getElementById('openOtherDashboard');
+(async () => {
+  if (!openOtherBtn) return;
+  if (!chrome.management || !chrome.management.getAll) return;
+  try {
+    const all = await chrome.management.getAll();
+    const hjk = all.find(e =>
+      e.id !== chrome.runtime.id &&
+      /hijack/i.test(e.name) && /logger|hh|history/i.test(e.name)
+    );
+    if (!hjk) return;
+    const url = `chrome-extension://${hjk.id}/src/dashboard/dashboard.html`;
+    openOtherBtn.style.display = '';
+    openOtherBtn.addEventListener('click', () => {
+      chrome.tabs.create({ url });
+    });
+  } catch (e) { /* permission denied — leave hidden */ }
+})();
 
 // ─── Rescan + reload stale tabs (v0.4.9) ──────────────────────────
 let lastStaleIds = [];
