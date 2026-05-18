@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Urgent Table</h1>
-    <span class="version">v0.4.8</span>
+    <span class="version">v0.4.9</span>
   </header>
 
   <section class="settings">
@@ -46,9 +46,14 @@
 
   <section class="debug">
     <h2>Debug</h2>
-    <button id="copyDebug">Copy debug snapshot</button>
+    <div class="debug-row">
+      <button id="rescanTabs">Rescan tabs</button>
+      <button id="reloadStale" style="display:none;">Reload stale tabs</button>
+      <button id="copyDebug">Copy debug snapshot</button>
+    </div>
     <span id="copyDebugStatus" class="dbg-status"></span>
-    <p class="hint">Copies SW state + recent events to clipboard as JSON for cross-machine debugging.</p>
+    <div id="staleList" class="stale-box" style="display:none;"></div>
+    <p class="hint">Rescan re-injects the proxy into every Hijack tab and flags any that have never produced frames (usually means the tab's WebSocket pre-dates the proxy and needs a reload).</p>
   </section>
 
   <script src="popup.js" type="module"></script>

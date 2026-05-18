@@ -18,6 +18,9 @@ const el = {
   tableList: document.getElementById('tableList'),
   copyDebug: document.getElementById('copyDebug'),
   copyDebugStatus: document.getElementById('copyDebugStatus'),
+  rescanTabs: document.getElementById('rescanTabs'),
+  reloadStale: document.getElementById('reloadStale'),
+  staleList: document.getElementById('staleList'),
 };
 
 let latest = null;
@@ -210,6 +213,60 @@ function render() {
 
 // Refresh "for X.Xs" counters every 500ms while the popup is open.
 setInterval(() => { if (latest && (latest.queue || []).length > 0) render(); }, 500);
+
+// ─── Rescan + reload stale tabs (v0.4.9) ──────────────────────────
+let lastStaleIds = [];
+if (el.rescanTabs) {
+  el.rescanTabs.addEventListener('click', async () => {
+    el.rescanTabs.disabled = true;
+    el.copyDebugStatus.textContent = 'rescanning…';
+    el.staleList.style.display = 'none';
+    el.reloadStale.style.display = 'none';
+    const resp = await new Promise((res) => {
+      chrome.runtime.sendMessage({ [RELAY_NS]: 1, kind: 'popup_rescan_tabs' }, (r) => {
+        if (chrome.runtime.lastError) res(null); else res(r);
+      });
+    });
+    el.rescanTabs.disabled = false;
+    if (!resp || !resp.ok) {
+      el.copyDebugStatus.textContent = 'rescan failed';
+      return;
+    }
+    el.copyDebugStatus.textContent = `re-injected ${resp.injected}/${resp.scanned} tab(s)`;
+    el.staleList.className = 'stale-box';
+    if (resp.stale && resp.stale.length > 0) {
+      lastStaleIds = resp.stale.map(s => s.tabId);
+      const items = resp.stale.map(s => `<li>Tab #${s.tabId} — ${(s.title || 'no title').slice(0, 60)}</li>`).join('');
+      el.staleList.innerHTML = `<strong>${resp.stale.length} tab(s) tracked but no frames captured.</strong> WebSocket likely pre-dates the proxy; reload to fix:<ul>${items}</ul>`;
+      el.staleList.style.display = 'block';
+      el.reloadStale.textContent = `Reload ${resp.stale.length} stale tabs`;
+      el.reloadStale.style.display = '';
+    } else {
+      lastStaleIds = [];
+      el.staleList.classList.add('ok');
+      el.staleList.innerHTML = '<strong>All good.</strong> Every Hijack tab is producing frames.';
+      el.staleList.style.display = 'block';
+      setTimeout(() => { el.staleList.style.display = 'none'; }, 3500);
+    }
+  });
+}
+if (el.reloadStale) {
+  el.reloadStale.addEventListener('click', async () => {
+    if (lastStaleIds.length === 0) return;
+    if (!confirm(`Reload ${lastStaleIds.length} stale tab(s)? Any in-progress decision on those tables will be interrupted.`)) return;
+    el.reloadStale.disabled = true;
+    const resp = await new Promise((res) => {
+      chrome.runtime.sendMessage({ [RELAY_NS]: 1, kind: 'popup_reload_stale_tabs', tabIds: lastStaleIds }, (r) => {
+        if (chrome.runtime.lastError) res(null); else res(r);
+      });
+    });
+    el.reloadStale.disabled = false;
+    el.reloadStale.style.display = 'none';
+    el.staleList.style.display = 'none';
+    el.copyDebugStatus.textContent = `reloaded ${resp ? resp.reloaded : 0} tab(s)`;
+    setTimeout(() => { el.copyDebugStatus.textContent = ''; }, 3000);
+  });
+}
 
 // ─── Debug snapshot (v0.4.8) ──────────────────────────────────────
 if (el.copyDebug) {

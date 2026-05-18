@@ -966,6 +966,59 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'popup_get_state':
       sendResponse({ ok: true, state: serializeState() });
       return false;  // sync response
+    case 'popup_rescan_tabs': {
+      // v0.4.9: force a re-inject NOW + identify stale tabs (tracked but
+      // never produced a gotOmaha frame, usually because their WebSocket
+      // pre-dates our proxy injection). Returns list so popup can offer
+      // a "Reload stale tabs" follow-up.
+      (async () => {
+        const tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] })
+          .catch(() => []);
+        let injected = 0;
+        for (const tab of tabs) {
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id, allFrames: true },
+              world: 'ISOLATED',
+              files: ['src/content/relay.js'],
+            });
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              world: 'MAIN',
+              files: ['src/background/ws_proxy.js'],
+            });
+            injected++;
+          } catch (e) { /* discarded — skip */ }
+        }
+        const now = Date.now();
+        const stale = [];
+        for (const tab of tabs) {
+          const tracked = state.perTab.get(tab.id);
+          if (!tracked) continue;
+          const ageMs = (now / 1000 - (tracked.startedAt || 0)) * 1000;
+          // Stale = registered >30s ago AND no per-gameID tables seen
+          if (ageMs > 30_000 && tracked.perTable.size === 0) {
+            stale.push({ tabId: tab.id, title: tab.title || '', url: tab.url || '' });
+          }
+        }
+        console.log(`[ut] rescan: re-injected into ${injected}/${tabs.length}; ${stale.length} stale`);
+        sendResponse({ ok: true, scanned: tabs.length, injected, stale });
+      })();
+      return true;
+    }
+    case 'popup_reload_stale_tabs': {
+      (async () => {
+        const ids = Array.isArray(msg.tabIds) ? msg.tabIds : [];
+        let reloaded = 0;
+        for (const id of ids) {
+          try { await chrome.tabs.reload(id); reloaded++; }
+          catch (e) {}
+        }
+        console.log(`[ut] reloaded ${reloaded}/${ids.length} stale tabs`);
+        sendResponse({ ok: true, reloaded });
+      })();
+      return true;
+    }
     case 'popup_debug_snapshot': {
       // v0.4.8: bundle full state + ring buffer for cross-machine debugging.
       // Stage rect is fetched async from chrome.storage.local so we await it.
@@ -1073,4 +1126,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.8 — debug snapshot button live');
+console.log('[ut] service worker booted v0.4.9 — rescan + reload stale tabs');
