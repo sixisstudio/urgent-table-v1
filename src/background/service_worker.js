@@ -16,7 +16,15 @@
 import { isRealCard } from '../lib/card_codec.js';
 
 const RELAY_NS = '__ut_v1__';
-const HIJACK_HOST = 'game.hijack.poker';
+// v0.4.12: accept any subdomain of hijack.poker, not just game.* —
+// table 147 was being served from play.hijack.poker and our tab
+// detection completely missed it because we only matched game.*
+const HIJACK_HOST_RE = /(^|\.)hijack\.poker$/i;
+const HIJACK_URL_PATTERNS = [
+  'https://game.hijack.poker/*',
+  'https://play.hijack.poker/*',
+  'https://*.hijack.poker/*',
+];
 const STORAGE_KEY = 'ut_state_v1';
 const STAGE_RECT_KEY = 'ut_stage_rect_v1';  // persistent — in chrome.storage.local
 
@@ -242,7 +250,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 async function reinjectMissingTabs() {
   let tabs = [];
-  try { tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] }); }
+  try { tabs = await chrome.tabs.query({ url: [...HIJACK_URL_PATTERNS] }); }
   catch (e) { return; }
 
   const trackedIds = new Set(state.perTab.keys());
@@ -368,7 +376,7 @@ function evictStaleTables() {
 // dropped without reconnect, etc.) without disrupting active play.
 async function refreshAllTabs(reason) {
   let tabs = [];
-  try { tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] }); }
+  try { tabs = await chrome.tabs.query({ url: [...HIJACK_URL_PATTERNS] }); }
   catch (e) { return; }
   console.log(`[ut] refresh (${reason}): re-injecting into ${tabs.length} Hijack tab(s)`);
   for (const tab of tabs) {
@@ -394,7 +402,7 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   let url;
   try { url = new URL(details.url); } catch (e) { return; }
-  if (url.hostname !== HIJACK_HOST) return;
+  if (!HIJACK_HOST_RE.test(url.hostname)) return;
   try {
     await chrome.scripting.executeScript({
       target: { tabId: details.tabId },
@@ -1000,7 +1008,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       //     but proxy never saw a gotOmaha frame → WebSocket pre-dates
       //     the proxy and needs a tab reload).
       (async () => {
-        const tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] })
+        const tabs = await chrome.tabs.query({ url: [...HIJACK_URL_PATTERNS] })
           .catch(() => []);
         let injected = 0;
         for (const tab of tabs) {
@@ -1061,7 +1069,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ok: true,
           snapshot: {
             extension: 'Urgent Table',
-            version: '0.4.11',
+            version: '0.4.12',
             bootedAt: state.bootedAt,
             capturedAt: Date.now(),
             heroGUID: state.heroGUID ? (state.heroGUID.slice(0, 12) + '…') : null,
@@ -1124,7 +1132,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function injectIntoExistingTabs() {
   let tabs = [];
   try {
-    tabs = await chrome.tabs.query({ url: ['https://game.hijack.poker/*'] });
+    tabs = await chrome.tabs.query({ url: [...HIJACK_URL_PATTERNS] });
   } catch (e) {
     console.warn('[ut] tabs.query failed:', e && e.message);
     return;
@@ -1155,4 +1163,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.11 — suppress urgency during blind-posting');
+console.log('[ut] service worker booted v0.4.12 — matches all hijack.poker subdomains');
