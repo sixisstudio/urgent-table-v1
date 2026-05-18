@@ -64,8 +64,19 @@ const state = {
   queue: [],
   stage: null,
   heroGUID: null,  // v0.4.3: captured from any outgoing frame's playerGUID field
-  settings: { enabled: true },
+  settings: {
+    enabled: true,
+    // v0.4.13: when on, the periodic reinject probe (every 60s) calls
+    // chrome.tabs.reload on any stale tab (Hijack tab tracked >60s with
+    // zero per-table state). Default off — auto-reload could interrupt
+    // a hand on a tab we're blind to. With it on, recovery is hands-off.
+    autoReloadStale: false,
+  },
   bootedAt: Date.now(),
+  // v0.4.13: per-tab last-reload timestamp so we don't reload-loop a
+  // tab that comes back stale immediately (e.g. the page itself doesn't
+  // open a WebSocket and never will).
+  _lastReloadAt: new Map(),
 };
 
 function ensureTab(tabId) {
@@ -252,6 +263,29 @@ async function reinjectMissingTabs() {
   let tabs = [];
   try { tabs = await chrome.tabs.query({ url: [...HIJACK_URL_PATTERNS] }); }
   catch (e) { return; }
+
+  // v0.4.13: opt-in auto-reload of stale tabs. Runs before injection so
+  // freshly-reloaded tabs don't get immediately reflagged this tick.
+  if (state.settings.autoReloadStale) {
+    const now = Date.now();
+    let reloadedCount = 0;
+    for (const tab of tabs) {
+      const tracked = state.perTab.get(tab.id);
+      if (!tracked) continue;
+      const ageMs = (now / 1000 - (tracked.startedAt || 0)) * 1000;
+      if (ageMs < 60_000 || tracked.perTable.size > 0) continue;
+      // Throttle: don't reload the same tab more than once every 5 min
+      const lastReload = state._lastReloadAt.get(tab.id) || 0;
+      if (now - lastReload < 5 * 60_000) continue;
+      try {
+        await chrome.tabs.reload(tab.id);
+        state._lastReloadAt.set(tab.id, now);
+        reloadedCount++;
+        console.log(`[ut] auto-reloaded stale tab=${tab.id} (tracked ${Math.round(ageMs/1000)}s, no tables)`);
+      } catch (e) { /* skip */ }
+    }
+    if (reloadedCount > 0) console.log(`[ut] auto-reload: ${reloadedCount} stale tab(s) reloaded`);
+  }
 
   const trackedIds = new Set(state.perTab.keys());
   const liveIds = new Set();
@@ -1069,7 +1103,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ok: true,
           snapshot: {
             extension: 'Urgent Table',
-            version: '0.4.12',
+            version: '0.4.13',
             bootedAt: state.bootedAt,
             capturedAt: Date.now(),
             heroGUID: state.heroGUID ? (state.heroGUID.slice(0, 12) + '…') : null,
@@ -1083,6 +1117,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         });
       })();
       return true;  // async response
+    }
+    case 'popup_set_auto_reload': {
+      state.settings.autoReloadStale = !!msg.value;
+      console.log(`[ut] autoReloadStale = ${state.settings.autoReloadStale}`);
+      schedulePersist();
+      sendResponse({ ok: true });
+      return false;
     }
     case 'popup_set_enabled': {
       state.settings.enabled = !!msg.value;
@@ -1163,4 +1204,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.12 — matches all hijack.poker subdomains');
+console.log('[ut] service worker booted v0.4.13 — auto-reload stale tabs (opt-in)');

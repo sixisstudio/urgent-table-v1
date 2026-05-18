@@ -11,6 +11,7 @@ const STAGE_RECT_KEY = 'ut_stage_rect_v1';
 
 const el = {
   enabled: document.getElementById('enabled'),
+  autoReloadStale: document.getElementById('autoReloadStale'),
   setStagePos: document.getElementById('setStagePos'),
   clearStage: document.getElementById('clearStage'),
   stageStatus: document.getElementById('stageStatus'),
@@ -60,6 +61,14 @@ el.enabled.addEventListener('change', () => {
     [RELAY_NS]: 1, kind: 'popup_set_enabled', value: el.enabled.checked,
   }, () => { /* state will be pushed back through storage change */ });
 });
+
+if (el.autoReloadStale) {
+  el.autoReloadStale.addEventListener('change', () => {
+    chrome.runtime.sendMessage({
+      [RELAY_NS]: 1, kind: 'popup_set_auto_reload', value: el.autoReloadStale.checked,
+    }, () => {});
+  });
+}
 
 el.setStagePos.addEventListener('click', () => {
   el.setStagePos.disabled = true;
@@ -120,6 +129,7 @@ function fmtElapsed(ms) {
 function render() {
   if (!latest) return;
   el.enabled.checked = !!(latest.settings && latest.settings.enabled);
+  if (el.autoReloadStale) el.autoReloadStale.checked = !!(latest.settings && latest.settings.autoReloadStale);
 
   // Build a lookup: (tabId, gameID) → table entry
   const tableLookup = new Map();

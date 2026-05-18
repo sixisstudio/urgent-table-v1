@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Urgent Table</h1>
-    <span class="version">v0.4.12</span>
+    <span class="version">v0.4.13</span>
   </header>
 
   <section class="settings">
@@ -18,6 +18,11 @@
       <span>Enabled</span>
     </label>
     <p class="hint">When off, urgency events are ignored and the queue clears. WebSocket capture stays running (no churn).</p>
+    <label class="row" style="margin-top:8px;">
+      <input type="checkbox" id="autoReloadStale">
+      <span>Auto-reload stale tabs</span>
+    </label>
+    <p class="hint">Every 60 s, automatically reload any Hijack tab that's tracked but producing no frames (WS pre-dates the proxy). Throttled to once per 5 min per tab. <strong>Use with care</strong>: if you're in a hand on a stale tab the reload will interrupt it.</p>
   </section>
 
   <section class="stage">
