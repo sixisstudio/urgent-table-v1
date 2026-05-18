@@ -530,6 +530,20 @@ function resolveCurrentActorSeat(game) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// v0.4.11: hole-cards check. Hijack briefly sets `move` to the SB / BB /
+// straddle seat during blind-posting, before any cards are dealt — the
+// detector was reading that as "hero to act" and staging the table for
+// a fraction of a second every new hand. Suppress urgency until real
+// hole cards exist in p{heroSeat}card1..4 so blind-post moments no
+// longer trigger a stage/unstage flicker.
+function heroHasCards(game, heroSeat) {
+  if (!heroSeat) return false;
+  for (let i = 1; i <= 4; i++) {
+    if (isRealCard(game[`p${heroSeat}card${i}`])) return true;
+  }
+  return false;
+}
+
 // v0.3.3: outgoing-frame fast-clear.
 //
 // Hero actions fly out on engine.hijack.poker/socket.io/ as socket.io EVENT
@@ -626,7 +640,10 @@ function processFrame(tabId, msg) {
   if (actorSeat !== heroSeat) {
     ts.pendingActComplete = 0;
   }
-  let nowUrgent = state.settings.enabled && heroSeat !== 0 && actorSeat === heroSeat;
+  let nowUrgent = state.settings.enabled
+    && heroSeat !== 0
+    && actorSeat === heroSeat
+    && heroHasCards(game, heroSeat);
   if (nowUrgent && ts.pendingActComplete && (now - ts.pendingActComplete < PENDING_ACT_GRACE_MS)) {
     nowUrgent = false;  // stale snapshot during the grace window
   }
@@ -1044,7 +1061,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ok: true,
           snapshot: {
             extension: 'Urgent Table',
-            version: '0.4.10',
+            version: '0.4.11',
             bootedAt: state.bootedAt,
             capturedAt: Date.now(),
             heroGUID: state.heroGUID ? (state.heroGUID.slice(0, 12) + '…') : null,
@@ -1138,4 +1155,4 @@ async function injectIntoExistingTabs() {
   await rehydrate();
   await injectIntoExistingTabs();
 })();
-console.log('[ut] service worker booted v0.4.10 — rescan waits 5s + reports relay-missing tabs');
+console.log('[ut] service worker booted v0.4.11 — suppress urgency during blind-posting');
